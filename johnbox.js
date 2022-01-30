@@ -171,13 +171,13 @@ function HostWSHandler(ws) {
         "pc": ++hostPC,
         "opcode": "client/welcome",
         "result": {
-            "id":1,
-            "secret":"000000000000000000000000",
-            "reconnect":false,
-            "deviceId":"0000000000.0000000000000000000000",
-            "entities":{},
-            "here":{},
-            "profile":null
+            "id": 1,
+            "secret": "000000000000000000000000",
+            "reconnect": false,
+            "deviceId": "0000000000.0000000000000000000000",
+            "entities": {},
+            "here": {},
+            "profile": null
         }
     }));
 }
@@ -225,11 +225,11 @@ function GuestWSHandler(ws, url) {
         "opcode": "client/welcome",
         "result": {
                 "id": 1 + playerCount,
-                "secret":"00000000-0000-0000-0000-000000000000",
-                "reconnect":false,
-                "deviceId":"0000000000.0000000000000000000000",
-                "entities":{},
-                "here":{},
+                "secret": "00000000-0000-0000-0000-000000000000",
+                "reconnect": false,
+                "deviceId": "0000000000.0000000000000000000000",
+                "entities": {},
+                "here": {},
                 "profile":{
                     "id": 1 + playerCount,
                     "roles": {
@@ -248,16 +248,15 @@ function GuestWSHandler(ws, url) {
     ws.send(JSON.stringify(clientWelcome));
     // send client connected message
     var clientConnected = {
-        "pc":++hostPC,
-        "opcode":"client/connected",
-        "result":{
+        "pc": ++hostPC,
+        "opcode": "client/connected",
+        "result": {
             "id": 1 + playerCount,
-            "userId":`00000000-0000-0000-0000-00000000000${playerCount}`,
-            "name":username,
-            "role":"player",
-            "reconnect":false,
-            "profile":
-            {
+            "userId": `00000000-0000-0000-0000-00000000000${playerCount}`,
+            "name": username,
+            "role": "player",
+            "reconnect": false,
+            "profile": {
                 "id": 1 + playerCount,
                 "roles": {
                     "player": { "name": username }
