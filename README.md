@@ -14,6 +14,7 @@ Currently, this server only supports hosting 1 room at a time.
     * Quiplash 3
     * Champ'd Up
     * Blather Round
+    * Talking Points
 * Drawful 2 International
 
 ### Tested known non-working games:
@@ -43,6 +44,6 @@ This is **NOT** meant to be used in any form of serious environment. This is an 
 1. `npm install ws` to install the WebSockets NodeJS module.
 2. Generate a TLS certificate for the web server to use.
 3. Edit the top of `johnbox.js` to change accessibleHost to a host accessible by all players (e.g. public IP)
-    * This must be
+    * This host must have a valid identity in the TLS certificate generated above
 4. `node johnbox` to start the server.
 5. Redirect the game to connect to your server. `jbg.config.jet` in each minigame folder has a `serverUrl` parameter.
