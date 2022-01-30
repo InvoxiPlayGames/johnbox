@@ -13,6 +13,7 @@ Currently, this server only supports hosting 1 room at a time.
 * The Jackbox Party Pack 7
     * Quiplash 3
     * Champ'd Up
+    * Blather Round
 * Drawful 2 International
 
 ### Tested known non-working games:

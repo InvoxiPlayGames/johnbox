@@ -239,7 +239,9 @@ function GuestWSHandler(ws, url) {
         }
     };
     for(var i = 1; i <= playerCount; i++) {
-        clientWelcome.result.here[`${i}`] = presenceMap[i];
+        clientWelcome.result.here[`${i}`] = {};
+        Object.assign(clientWelcome.result.here[`${i}`], presenceMap[i]);
+        delete clientWelcome.result.here[`${i}`].socket;
     }
     var objectKeys = Object.keys(roomObjects);
     for(var i = 0; i < objectKeys.length; i++) {
