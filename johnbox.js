@@ -159,7 +159,6 @@ function HostWSHandler(ws) {
             case "object/create":
             case "object/update":
             case "object/set": // setting / updating objects to be passed around to players
-                // TODO: implement acl (access control list?) / permissions - currently all objects are sent to everyone, breaking games like jobjob
                 roomObjects[parsed.params.key] = parsed.params.val;
                 if (parsed.params.acl) {
                     roomAcls[parsed.params.key] = parsed.params.acl[0].split(' ');
@@ -243,15 +242,15 @@ function GuestWSHandler(ws, url) {
         var parsed = JSON.parse(data);
         var text = false;
         switch (parsed.opcode) {
-            case "text/create":
             case "text/update":
             case "text/set":
                 text = true;
-            case "object/create":
             case "object/update":
             case "object/set": // setting / updating objects to be passed around to players
                 // TODO: implement permissions checks
                 if (roomObjects[parsed.params.key]) { // only update object if it exists
+                    // verify that the ACL allows the object to be edited
+                    if (roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${2 + playerID}` && roomAcls[parsed.params.key][1] != '*')) return;
                     roomObjects[parsed.params.key] = parsed.params.val;
                     console.log("Client", 2 + playerID, "modified object", parsed.params.key);
                     presenceMap[1].socket.send(JSON.stringify({ "pc": ++hostPC, "opcode": text ? "text" : "object", "result": parsed.params }));
