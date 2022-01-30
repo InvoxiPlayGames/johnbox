@@ -134,6 +134,7 @@ wss.on('connection', function connection(ws, request) {
 server.listen(443);
 
 var roomObjects = {};
+var roomAcls = {};
 var presenceMap = {};
 var playerCount = 0;
 var hostPC = 2;
@@ -160,14 +161,20 @@ function HostWSHandler(ws) {
             case "object/set": // setting / updating objects to be passed around to players
                 // TODO: implement acl (access control list?) / permissions - currently all objects are sent to everyone, breaking games like jobjob
                 roomObjects[parsed.params.key] = parsed.params.val;
+                if (parsed.params.acl) {
+                    roomAcls[parsed.params.key] = parsed.params.acl[0].split(' ');
+                }
                 console.log("Host modified object", parsed.params.key);
                 ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
                 for(var i = 2; i <= playerCount + 1; i++) {
-                    presenceMap[i].socket.send(JSON.stringify({ "pc": ++guestPC[i - 2], "opcode": text ? "text" : "object", "result": parsed.params }))
+                    // only deliver to clients if the acl allows it
+                    if (roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${i}` && roomAcls[parsed.params.key][1] != '*')) continue;
+                    presenceMap[i].socket.send(JSON.stringify({ "pc": ++guestPC[i - 2], "opcode": text ? "text" : "object", "result": parsed.params }));
                 }
                 break;
                 case "drop": // delete the room object
                     delete roomObjects[parsed.params.key];
+                    delete roomAcls[parsed.params.key];
                     console.log("Host dropped object", parsed.params.key);
                     ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
                     break;
@@ -244,9 +251,11 @@ function GuestWSHandler(ws, url) {
             case "object/update":
             case "object/set": // setting / updating objects to be passed around to players
                 // TODO: implement permissions checks
-                roomObjects[parsed.params.key] = parsed.params.val;
-                console.log("Client", 2 + playerID, "modified object", parsed.params.key);
-                presenceMap[1].socket.send(JSON.stringify({ "pc": ++hostPC, "opcode": text ? "text" : "object", "result": parsed.params }));
+                if (roomObjects[parsed.params.key]) { // only update object if it exists
+                    roomObjects[parsed.params.key] = parsed.params.val;
+                    console.log("Client", 2 + playerID, "modified object", parsed.params.key);
+                    presenceMap[1].socket.send(JSON.stringify({ "pc": ++hostPC, "opcode": text ? "text" : "object", "result": parsed.params }));
+                }
                 ws.send(JSON.stringify({ "pc": ++guestPC[playerID], "re": parsed.seq, "opcode": "ok", "result": {} }));
                 break;
             case "client/send":
@@ -289,6 +298,8 @@ function GuestWSHandler(ws, url) {
     }
     var objectKeys = Object.keys(roomObjects);
     for(var i = 0; i < objectKeys.length; i++) {
+        // only deliver to clients if the acl allows it
+        if (roomAcls[objectKeys[i]] && (roomAcls[objectKeys[i]][1] != `id:${1 + playerCount}` && roomAcls[objectKeys[i]][1] != '*')) continue;
         clientWelcome.result.entities[objectKeys[i]] = [ "object", { key: objectKeys[i], val: roomObjects[objectKeys[i]], version: 0, from: 1 } ];
     }
     ws.send(JSON.stringify(clientWelcome));
