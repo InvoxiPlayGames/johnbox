@@ -197,6 +197,13 @@ function HostWSHandler(ws) {
                     break;
         }
     });
+    ws.on('close', function close() {
+        appID = ""; // set app ID to nothing so rooms request fails
+        for(var i = 2; i <= playerCount + 1; i++) {
+            presenceMap[i].socket.terminate(); // disconnect all players
+            presenceMap[i] = {};
+        }
+    });
     // send welcome message
     console.log("Sending host welcome.");
     ws.send(JSON.stringify({
@@ -215,8 +222,8 @@ function HostWSHandler(ws) {
 }
 
 function GuestWSHandler(ws, url) {
-    if (roomLocked || playerCount >= maxPlayers) {
-        console.log("Client tried to connect while locked or full.");
+    if (appID == "" || roomLocked || playerCount >= maxPlayers) {
+        console.log("Client tried to connect while no room, locked or full.");
         ws.terminate();
         return;
     }

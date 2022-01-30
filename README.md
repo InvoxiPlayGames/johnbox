@@ -15,14 +15,14 @@ Currently, this server only supports hosting 1 room at a time.
     * Champ'd Up
     * Blather Round
     * Talking Points
+    * The Devils and the Details (requires Audience explicitly disabled)
+* The Jackbox Party Pack 8
+    * Job Job (requires Audience explicitly disabled)
+    * Drawful Animate
 * Drawful 2 International
 
 ### Tested known non-working games:
 
-* The Jackbox Party Pack 7
-    * The Devils and the Details (game hangs after character select)
-* The Jackbox Party Pack 8
-    * Job Job (UI on the frontend is bugged, can not progress)
 * Quiplash 2 InterLASHional
     * Quiplash 2 InterLASHional only uses API v2 for gathering server info. Rooms are still handled via blobcast.
 * The Jackbox Party Pack 6
@@ -37,6 +37,7 @@ Currently, this server only supports hosting 1 room at a time.
 * Room passcodes
 * Audiences
 * Moderation features
+* UGC (user-made episodes, etc)
 * Blobcast / API v1(? what is the real name)
 
 ## Usage
