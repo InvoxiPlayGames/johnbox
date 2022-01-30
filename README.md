@@ -19,6 +19,8 @@ Currently, this server only supports hosting 1 room at a time.
 
 ### Tested known non-working games:
 
+* The Jackbox Party Pack 7
+    * The Devils and the Details (game hangs after character select)
 * The Jackbox Party Pack 8
     * Job Job (UI on the frontend is bugged, can not progress)
 * Quiplash 2 InterLASHional

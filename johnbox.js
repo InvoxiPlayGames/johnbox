@@ -48,6 +48,8 @@ var roomsResponse = {
 }
 var appTag = "";
 var appID = "";
+var roomLocked = false;
+var maxPlayers = 0;
 var joinRoomsResponse = {
     "ok": true,
     "body": {
@@ -80,9 +82,10 @@ function httpHandle(req, res) {
         req.on('data', (chunk) => { data+=chunk; });
         req.on('end', () => {
             data = JSON.parse(data);
-            console.log(data);
+            //console.log(data);
             appID = data.appId;
             appTag = data.appTag;
+            maxPlayers = data.maxPlayers;
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(roomsResponse));
         });
@@ -92,9 +95,17 @@ function httpHandle(req, res) {
         res.end(JSON.stringify(appConfigResponse));
     // Ecast room join
     } else if (req.url.startsWith('/api/v2/rooms/')) {
+        if (appID == "") {
+            // if we don't have an app ID, return 404
+            res.writeHead(404, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end();
+            return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
         joinRoomsResponse.body.appTag = appTag;
         joinRoomsResponse.body.appId = appID;
+        joinRoomsResponse.body.locked = roomLocked;
+        joinRoomsResponse.body.full = playerCount >= maxPlayers;
         res.end(JSON.stringify(joinRoomsResponse));
     // Unknown
     } else {
@@ -112,6 +123,10 @@ const wss = new wslib.WebSocketServer({ server });
 
 wss.on('connection', function connection(ws, request) {
     console.log('WS: ' + request.url);
+    if (appID == "") {
+        ws.terminate();
+        return;
+    }
     if (request.url.includes("role=host")) HostWSHandler(ws);
     if (request.url.includes("role=player")) GuestWSHandler(ws, request.url);
 });
@@ -125,9 +140,12 @@ var hostPC = 2;
 var guestPC = [];
 
 function HostWSHandler(ws) {
+    // reset state, start new game
     playerCount = 0;
     presenceMap = {};
     roomObjects = {};
+    guestPC = [];
+    roomLocked = false;
     presenceMap[1] = { socket: ws, id: "1", roles: { host: {} } };
     ws.on('message', function message(data) {
         var parsed = JSON.parse(data);
@@ -156,8 +174,22 @@ function HostWSHandler(ws) {
                 case "room/get-audience": // we don't support audiences, but just return 0
                     ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "room/get-audience", "result": {"connections": 0} }));
                     break;
+                case "room/lock":
+                    roomLocked = true;
+                    console.log("Host locked room");
+                    ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
+                    break;
+                case "room/exit": // kick all players
+                    console.log("Host closed room");
+                    appID = ""; // set app ID to nothing so rooms request fails
+                    for(var i = 2; i <= playerCount + 1; i++) {
+                        presenceMap[i].socket.terminate(); // disconnect all players
+                        presenceMap[i] = {};
+                    }
+                    ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
+                    ws.terminate();
+                    break;
                 case "room/start-audience": // start audience?, TODO
-                case "room/exit": // kick all players, TODO
                 default:
                     // just ignore and return default OK
                     console.log("Unimplemented host opcode", parsed.opcode, "with data", parsed);
@@ -183,6 +215,11 @@ function HostWSHandler(ws) {
 }
 
 function GuestWSHandler(ws, url) {
+    if (roomLocked || playerCount >= maxPlayers) {
+        console.log("Client tried to connect while locked or full.");
+        ws.terminate();
+        return;
+    }
     guestPC.push(2);
     var playerID = playerCount;
     var username = URL.parse(url, true).query["name"] ? URL.parse(url, true).query["name"] : `JOHN ${playerID + 1}`;
