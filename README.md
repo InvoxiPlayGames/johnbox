@@ -48,9 +48,10 @@ This is **NOT** meant to be used in any form of serious environment. This is an 
 
 1. `npm install ws` to install the WebSockets NodeJS module.
 2. Generate a TLS certificate for the web server to use
-   - You can use [this tutorial](https://gist.github.com/cecilemuller/9492b848eb8fe46d462abeb26656c4f8) to generate these certificates (make sure to use the *Chrome, IE11 & Edge* method when trusting the new certificates).
-   - If you are running this on a seperate server (not localhost), you should use a domain name and Let's Encrypt to access the server.
+   * You can use [this tutorial](https://gist.github.com/cecilemuller/9492b848eb8fe46d462abeb26656c4f8) to generate these certificates (make sure to use the *Chrome, IE11 & Edge* method when trusting the new certificates).
+   * If you are running this on a seperate server (not localhost), you should use a domain name and Let's Encrypt to access the server.
 3. If you are running this on a seperate server, edit the top of `johnbox.js` to change accessibleHost to a host accessible by all players (e.g. public IP)
-4. `node johnbox.js` (or `sudo node johnbox.js` on Linux) to start the server.
-5. Redirect the game to connect to your server. `jbg.config.jet` in each minigame folder has a `serverUrl` parameter.
-6. Go to https://jackbox.tv?server=localhost and have fun!
+   * Also, if your certificates are not named localhost.crt and localhost.key, change those also in `johnbox.js`
+5. `node johnbox.js` (or `sudo node johnbox.js` on Linux) to start the server.
+6. Redirect the game to connect to your server. `jbg.config.jet` in each minigame folder has a `serverUrl` parameter.
+7. Go to https://jackbox.tv?server=localhost and have fun!
