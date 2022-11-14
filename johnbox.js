@@ -25,8 +25,8 @@ var URL = require("url");
 var accessibleHost = "127.0.0.1";
 // the TLS certificate / key used for the server
 // must have valid SNI for accessibleHost
-var tlsCertificate = "../localhost.crt";
-var tlsKey = "../localhost.key";
+var tlsCertificate = "localhost.crt";
+var tlsKey = "localhost.key";
 // the room code to automatically assign to rooms
 var roomCode = "JOHN";
 
