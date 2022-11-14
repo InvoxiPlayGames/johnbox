@@ -42,7 +42,7 @@ Currently, this server only supports hosting 1 room at a time.
 
 ## Usage
 
-*Note*: Using the server only works on the Windows version of the game. If you are on Linux, use Proton.
+*Note*: You must be running the Windows version of the game to use this server. If you are on Linux, use Proton.
 
 This is **NOT** meant to be used in any form of serious environment. This is an experimental testing server, and there is no way to safely configure a web browser to connect to this server currently.
 
