@@ -22,7 +22,7 @@ var wslib = require("ws");
 var URL = require("url");
 
 // the host that the custom server is accessible with
-var accessibleHost = "127.0.0.1";
+var accessibleHost = "localhost";
 // the TLS certificate / key used for the server
 // must have valid SNI for accessibleHost
 var tlsCertificate = "localhost.crt";
