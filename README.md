@@ -48,7 +48,7 @@ This is **NOT** meant to be used in any form of serious environment. This is an 
 
 1. `npm install ws` to install the WebSockets NodeJS module.
 2. Generate a TLS certificate for the web server to use
-   * You can use [this tutorial](https://gist.github.com/cecilemuller/9492b848eb8fe46d462abeb26656c4f8) to generate these certificates (make sure to use the *Chrome, IE11 & Edge* method when trusting the new certificates).
+   * You can use [this tutorial](https://gist.github.com/cecilemuller/9492b848eb8fe46d462abeb26656c4f8) to generate these certificates (make sure to use the *Chrome, IE11 & Edge* method when trusting the new certificates, or your OS's specific way).
    * If you are running this on a seperate server (not localhost), you should use a domain name and Let's Encrypt to access the server.
 3. If you are running this on a seperate server, edit the top of `johnbox.js` to change accessibleHost to the host you made Let's Encrypt certificates for.
    * Also, if your certificates are not named localhost.crt and localhost.key, change those also in `johnbox.js`
