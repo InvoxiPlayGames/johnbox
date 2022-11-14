@@ -55,4 +55,4 @@ This is **NOT** meant to be used in any form of serious environment. This is an 
 5. `node johnbox.js` (or `sudo node johnbox.js` on Linux) to start the server.
 6. Redirect the game to connect to your server. `jbg.config.jet` in each minigame folder has a `serverUrl` parameter.
    * If your server is running on your local system, put `localhost` in this parameter, if not, put the public URL of the server
-8. On the machine that is running the server, you can go to https://jackbox.tv?server=localhost to play!
+8. On the machine that is running the server, you can go to https://jackbox.tv?server=localhost to play! (Make sure you also have a Browser extension installed that fixes CORS. Just look up CORS on your browser's web store).
