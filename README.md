@@ -54,4 +54,5 @@ This is **NOT** meant to be used in any form of serious environment. This is an 
    * Also, if your certificates are not named localhost.crt and localhost.key, change those also in `johnbox.js`
 5. `node johnbox.js` (or `sudo node johnbox.js` on Linux) to start the server.
 6. Redirect the game to connect to your server. `jbg.config.jet` in each minigame folder has a `serverUrl` parameter.
-7. Go to https://jackbox.tv?server=localhost and have fun!
+   * If your server is running on your local system, put `localhost` in this parameter, if not, put the public URL of the server
+8. Go to https://jackbox.tv?server=localhost and have fun!
