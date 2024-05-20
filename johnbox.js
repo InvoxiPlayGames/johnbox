@@ -219,7 +219,7 @@ function HostWSHandler(ws) {
                 roomTypes[parsed.params.key] = opcode;
                 for(var i = 2; i <= playerCount + 1; i++) {
                     // only deliver to clients if the acl allows it
-                    if (roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${i}` && roomAcls[parsed.params.key] != 'role:host' && roomAcls[parsed.params.key][1] != '*')) continue;
+                    if (roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${i}` && roomAcls[parsed.params.key] != 'role:player' && roomAcls[parsed.params.key][1] != '*')) continue;
                     let result = parsed.params;
                     delete result["min"];
                     delete result["type"];
@@ -462,7 +462,7 @@ function GuestWSHandler(ws, url) {
     var objectKeys = Object.keys(roomObjects);
     for(var i = 0; i < objectKeys.length; i++) {
         // only deliver to clients if the acl allows it
-        if (roomAcls[objectKeys[i]] && (roomAcls[objectKeys[i]][1] != `id:${1 + playerCount}` && roomAcls[objectKeys[i]][1] != 'role:player' && roomAcls[objectKeys[i]][1] != '*')) continue;
+        if (roomAcls[objectKeys[i]] && (roomAcls[objectKeys[i]][1] != `id:${1 + playerCount}` && roomAcls[objectKeys[i]][1] != ((1 + playerCount) == 1) ? 'role:host' : 'role:player' && roomAcls[objectKeys[i]][1] != '*')) continue;
         clientWelcome.result.entities[objectKeys[i]] = [ roomTypes[objectKeys[i]], { key: objectKeys[i], val: roomObjects[objectKeys[i]], version: roomVersions[objectKeys[i]], from: 1 }, { "locked": roomLocks[objectKeys[i]] } ];
     }
     // console.log(util.inspect(clientWelcome, false, null, true));
