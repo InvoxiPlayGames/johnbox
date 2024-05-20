@@ -140,6 +140,7 @@ var roomRestrictions = {};
 var roomAcls = {};
 var roomTypes = {};
 var roomLocks = {};
+var roomFroms = {};
 var presenceMap = {};
 var playerCount = 0;
 var hostPC = 2;
@@ -154,6 +155,7 @@ function HostWSHandler(ws) {
     roomRestrictions = {};
     roomTypes = {};
     roomLocks = {};
+    roomFroms = {};
     guestPC = [];
     roomLocked = false;
     presenceMap[1] = { socket: ws, id: "1", roles: { host: {} } };
@@ -187,6 +189,7 @@ function HostWSHandler(ws) {
                 if (parsed.params.acl) {
                     roomAcls[parsed.params.key] = parsed.params.acl[0].split(' ');
                 }
+                roomFroms[parsed.params.key] = 1;
                 console.log("Host modified object", parsed.params.key);
                 ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
                 let opcode = "object";
@@ -317,6 +320,7 @@ function GuestWSHandler(ws, url) {
                     roomObjects[parsed.params.key] = parsed.params.val;
                     console.log("Client", 2 + playerID, "modified object", parsed.params.key);
                     roomVersions[parsed.params.key] += 1;
+                    roomFroms[parsed.params.key] = 2 + playerID;
                     let result = parsed.params;
                     result["version"] = roomVersions[parsed.params.key];
                     result["from"] = 2 + playerID;
@@ -330,6 +334,35 @@ function GuestWSHandler(ws, url) {
                     presenceMap[1].socket.send(JSON.stringify(message));
                 }
                 ws.send(JSON.stringify({ "pc": ++guestPC[playerID], "re": parsed.seq, "opcode": "ok", "result": {} }));
+                break;
+            case "text/get":
+                text = true
+            case "number/get":
+                number = true
+            case "object/get":
+                if (roomVersions[parsed.params.key] >= 0) { // only get object if exists
+                    let result = parsed.params;
+                    result["val"] = roomObjects[parsed.params.key];
+                    result["version"] = roomVersions[parsed.params.key];
+                    result["from"] = roomFroms[parsed.params.key];
+                    let opcode = "object";
+                    if (text) {
+                        opcode = "text";
+                    } else if (number) {
+                        opcode = "number";
+                    }
+                    delete result["min"];
+                    delete result["type"];
+                    delete result["increment"];
+                    delete result["accept"];
+                    delete result["reject"];
+                    if (number && !text) {
+                        result["restrictions"] = roomRestrictions[parsed.params.key];
+                    }
+                    let message = { "pc": ++guestPC[playerID], "re": parsed.seq, "opcode": opcode, "result": result };
+                    console.log(util.inspect(message, false, null, true));
+                    ws.send(JSON.stringify(message));
+                }
                 break;
             case "lock":
                 console.log("Client", 2 + playerID, "locked object", parsed.params.key);
