@@ -208,6 +208,8 @@ function HostWSHandler(ws) {
                     roomRestrictions[parsed.params.key] = {};
                     if (parsed.params.min)
                         roomRestrictions[parsed.params.key]["min"] = parsed.params.min;
+                    if (parsed.params.max)
+                        roomRestrictions[parsed.params.key]["max"] = parsed.params.max;
                     if (parsed.params.type)
                         roomRestrictions[parsed.params.key]["type"] = parsed.params.type;
                     if (parsed.params.increment)
@@ -222,6 +224,7 @@ function HostWSHandler(ws) {
                     if (roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${i}` && roomAcls[parsed.params.key] != 'role:player' && roomAcls[parsed.params.key][1] != '*')) continue;
                     let result = parsed.params;
                     delete result["min"];
+                    delete result["max"];
                     delete result["type"];
                     delete result["increment"];
                     delete result["accept"];
@@ -278,6 +281,7 @@ function HostWSHandler(ws) {
                 ws.terminate();
                 break;
             case "text/filter": // Passes text to ecast to check for banned content, just looks for a default OK in response, TODO?
+            case "game/start": // Probably telemetry, expects a default OK in response, TODO?
             case "room/start-audience": // start audience?, TODO
             default:
                 // just ignore and return default OK
@@ -403,6 +407,7 @@ function GuestWSHandler(ws, url) {
                         opcode = "doodle"
                     }
                     delete result["min"];
+                    delete result["max"];
                     delete result["type"];
                     delete result["increment"];
                     delete result["accept"];
