@@ -164,6 +164,7 @@ function HostWSHandler(ws) {
         // console.log(util.inspect(parsed, false, null, true));
         var text = false;
         var number = false;
+        var doodle = false;
         switch (parsed.opcode) {
             case "text/create":
             case "text/update":
@@ -173,9 +174,15 @@ function HostWSHandler(ws) {
             case "number/update":
             case "number/set":
                 number = true;
+            case "doodle/create":
+                doodle = true;
             case "object/create":
             case "object/update":
             case "object/set": // setting / updating objects to be passed around to players
+                if (doodle && !text && !number) {
+                    parsed.params["val"] = structuredClone(parsed.params);
+                    delete parsed.params["val"]["acl"];
+                }
                 roomObjects[parsed.params.key] = parsed.params.val;
                 // if (roomLocks[parsed.params.key] === true) {
                 //     return;
@@ -204,11 +211,15 @@ function HostWSHandler(ws) {
                         roomRestrictions[parsed.params.key]["type"] = parsed.params.type;
                     if (parsed.params.increment)
                         roomRestrictions[parsed.params.key]["increment"] = parsed.params.increment;
+                } else if (doodle) {
+                    opcode = "doodle"
+                    roomObjects[parsed.params.key]["maxLayer"] = 0;
+                    roomObjects[parsed.params.key]["lines"] = [];
                 }
                 roomTypes[parsed.params.key] = opcode;
                 for(var i = 2; i <= playerCount + 1; i++) {
                     // only deliver to clients if the acl allows it
-                    if (roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${i}` && roomAcls[parsed.params.key][1] != '*')) continue;
+                    if (roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${i}` && roomAcls[parsed.params.key] != 'role:host' && roomAcls[parsed.params.key][1] != '*')) continue;
                     let result = parsed.params;
                     delete result["min"];
                     delete result["type"];
@@ -218,16 +229,32 @@ function HostWSHandler(ws) {
                     if (number && !text) {
                         result["restrictions"] = roomRestrictions[parsed.params.key];
                     }
-                    result["version"] = roomVersions[parsed.params.key];
+                    if (!doodle || text || number) {
+                        result["version"] = roomVersions[parsed.params.key];
+                    } else {
+                        result["index"] = roomVersions[parsed.params.key];
+                    }
                     result["from"] = 1;
                     result = { "pc": ++guestPC[i - 2], "opcode": opcode, "result": result };
                     // console.log(util.inspect(result, false, null, true));
                     presenceMap[i].socket.send(JSON.stringify(result));
                 }
                 break;
+            case "lock":
+                console.log("Host locked object", parsed.params.key);
+                // console.log(util.inspect(parsed, false, null, true));
+                roomLocks[parsed.params.key] = true;
+                let reply = { "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }
+                // console.log(util.inspect(message, false, null, true));
+                ws.send(JSON.stringify(reply));
+                break;
             case "drop": // delete the room object
                 delete roomObjects[parsed.params.key];
                 delete roomVersions[parsed.params.key];
+                delete roomRestrictions[parsed.params.key];
+                delete roomTypes[parsed.params.key];
+                delete roomLocks[parsed.params.key];
+                delete roomFroms[parsed.params.key];
                 delete roomAcls[parsed.params.key];
                 console.log("Host dropped object", parsed.params.key);
                 ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
@@ -300,6 +327,7 @@ function GuestWSHandler(ws, url) {
         var parsed = JSON.parse(data);
         var text = false;
         var number = false;
+        var doodle = false;
         switch (parsed.opcode) {
             case "text/update":
             case "text/set":
@@ -307,6 +335,8 @@ function GuestWSHandler(ws, url) {
             case "number/update":
             case "number/set":
                 number = true;
+            case "doodle/stroke":
+                doodle = true;
             case "object/update":
             case "object/set": // setting / updating objects to be passed around to players
                 // TODO: implement permissions checks
@@ -317,18 +347,31 @@ function GuestWSHandler(ws, url) {
                     roomLocks[parsed.params.key] = false;
                     // verify that the ACL allows the object to be edited
                     // if (roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${2 + playerID}` && roomAcls[parsed.params.key][1] != '*')) return;
-                    roomObjects[parsed.params.key] = parsed.params.val;
+                    if (!doodle || text || number) {
+                        roomObjects[parsed.params.key] = parsed.params.val;
+                    }
+                    // } else {
+                    //     roomObjects[parsed.params.key]["lines"].push(...parsed.params.points);
+                    // }
                     console.log("Client", 2 + playerID, "modified object", parsed.params.key);
                     roomVersions[parsed.params.key] += 1;
                     roomFroms[parsed.params.key] = 2 + playerID;
                     let result = parsed.params;
-                    result["version"] = roomVersions[parsed.params.key];
+                    if (!doodle || text || number) {
+                        result["version"] = roomVersions[parsed.params.key];
+                    } else {
+                        result["index"] = roomVersions[parsed.params.key];
+                        result["val"] = structuredClone(result);
+                        delete result["val"]["key"];
+                    }
                     result["from"] = 2 + playerID;
                     let opcode = "object";
                     if (text) {
                         opcode = "text";
                     } else if (number) {
                         opcode = "number";
+                    } else if (doodle) {
+                        opcode = "doodle/line";
                     }
                     let message = { "pc": ++hostPC, "opcode": opcode, "result": result };
                     presenceMap[1].socket.send(JSON.stringify(message));
@@ -356,6 +399,7 @@ function GuestWSHandler(ws, url) {
                     delete result["increment"];
                     delete result["accept"];
                     delete result["reject"];
+                    delete result["acl"];
                     if (number && !text) {
                         result["restrictions"] = roomRestrictions[parsed.params.key];
                     }
@@ -418,7 +462,7 @@ function GuestWSHandler(ws, url) {
     var objectKeys = Object.keys(roomObjects);
     for(var i = 0; i < objectKeys.length; i++) {
         // only deliver to clients if the acl allows it
-        if (roomAcls[objectKeys[i]] && (roomAcls[objectKeys[i]][1] != `id:${1 + playerCount}` && roomAcls[objectKeys[i]][1] != '*')) continue;
+        if (roomAcls[objectKeys[i]] && (roomAcls[objectKeys[i]][1] != `id:${1 + playerCount}` && roomAcls[objectKeys[i]][1] != 'role:player' && roomAcls[objectKeys[i]][1] != '*')) continue;
         clientWelcome.result.entities[objectKeys[i]] = [ roomTypes[objectKeys[i]], { key: objectKeys[i], val: roomObjects[objectKeys[i]], version: roomVersions[objectKeys[i]], from: 1 }, { "locked": roomLocks[objectKeys[i]] } ];
     }
     // console.log(util.inspect(clientWelcome, false, null, true));
