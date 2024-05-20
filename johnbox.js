@@ -17,17 +17,18 @@
 */
 
 var fs = require("fs");
-var https = require("https");
+// var https = require("https");
+var http = require("http");
 var wslib = require("ws");
 const util = require('util')
 var URL = require("url");
 
 // the host that the custom server is accessible with
-var accessibleHost = "192.168.1.44";
+var accessibleHost = "192.168.1.10";
 // the TLS certificate / key used for the server
 // must have valid SNI for accessibleHost
-var tlsCertificate = "certs/192.168.1.44.pem";
-var tlsKey = "certs/192.168.1.44-key.pem";
+// var tlsCertificate = "certs/192.168.1.10.pem";
+// var tlsKey = "certs/192.168.1.10-key.pem";
 // the room code to automatically assign to rooms
 var roomCode = "JOHN";
 
@@ -115,9 +116,9 @@ function httpHandle(req, res) {
     }
 }
 
-const server = https.createServer({
-    cert: fs.readFileSync(tlsCertificate),
-    key: fs.readFileSync(tlsKey)
+const server = http.createServer({
+    // cert: fs.readFileSync(tlsCertificate),
+    // key: fs.readFileSync(tlsKey)
 }, httpHandle);
 
 const wss = new wslib.WebSocketServer({ server });
@@ -132,7 +133,7 @@ wss.on('connection', function connection(ws, request) {
     if (request.url.includes("role=player")) GuestWSHandler(ws, request.url);
 });
 
-server.listen(443, "0.0.0.0");
+server.listen(8080, "0.0.0.0");
 
 var roomObjects = {};
 var roomVersions = {};
@@ -213,7 +214,6 @@ function HostWSHandler(ws) {
                         roomRestrictions[parsed.params.key]["increment"] = parsed.params.increment;
                 } else if (doodle) {
                     opcode = "doodle"
-                    roomObjects[parsed.params.key]["maxLayer"] = 0;
                     roomObjects[parsed.params.key]["lines"] = [];
                 }
                 roomTypes[parsed.params.key] = opcode;
@@ -349,10 +349,9 @@ function GuestWSHandler(ws, url) {
                     // if (roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${2 + playerID}` && roomAcls[parsed.params.key][1] != '*')) return;
                     if (!doodle || text || number) {
                         roomObjects[parsed.params.key] = parsed.params.val;
+                    } else {
+                        roomObjects[parsed.params.key]["lines"].push(...parsed.params.points);
                     }
-                    // } else {
-                    //     roomObjects[parsed.params.key]["lines"].push(...parsed.params.points);
-                    // }
                     console.log("Client", 2 + playerID, "modified object", parsed.params.key);
                     roomVersions[parsed.params.key] += 1;
                     roomFroms[parsed.params.key] = 2 + playerID;
@@ -382,17 +381,26 @@ function GuestWSHandler(ws, url) {
                 text = true
             case "number/get":
                 number = true
+            case "doodle/get":
+                doodle = true
             case "object/get":
                 if (roomVersions[parsed.params.key] >= 0) { // only get object if exists
                     let result = parsed.params;
                     result["val"] = roomObjects[parsed.params.key];
-                    result["version"] = roomVersions[parsed.params.key];
+                    if (!doodle || text || number) {
+                        result["version"] = roomVersions[parsed.params.key];
+                    } else {
+                        result["index"] = roomVersions[parsed.params.key];
+                        delete result["val"]["key"];
+                    }
                     result["from"] = roomFroms[parsed.params.key];
                     let opcode = "object";
                     if (text) {
                         opcode = "text";
                     } else if (number) {
                         opcode = "number";
+                    } else if (doodle) {
+                        opcode = "doodle"
                     }
                     delete result["min"];
                     delete result["type"];
