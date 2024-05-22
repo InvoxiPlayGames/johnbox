@@ -17,16 +17,18 @@
 */
 
 var fs = require("fs");
-var https = require("https");
+// var https = require("https");
+var http = require("http");
 var wslib = require("ws");
+const util = require('util')
 var URL = require("url");
 
 // the host that the custom server is accessible with
-var accessibleHost = "127.0.0.1";
+var accessibleHost = "192.168.1.10";
 // the TLS certificate / key used for the server
 // must have valid SNI for accessibleHost
-var tlsCertificate = "../localhost.crt";
-var tlsKey = "../localhost.key";
+// var tlsCertificate = "certs/192.168.1.10.pem";
+// var tlsKey = "certs/192.168.1.10-key.pem";
 // the room code to automatically assign to rooms
 var roomCode = "JOHN";
 
@@ -82,7 +84,7 @@ function httpHandle(req, res) {
         req.on('data', (chunk) => { data+=chunk; });
         req.on('end', () => {
             data = JSON.parse(data);
-            //console.log(data);
+            // console.log(data);
             appID = data.appId;
             appTag = data.appTag;
             maxPlayers = data.maxPlayers;
@@ -114,9 +116,9 @@ function httpHandle(req, res) {
     }
 }
 
-const server = https.createServer({
-    cert: fs.readFileSync(tlsCertificate),
-    key: fs.readFileSync(tlsKey)
+const server = http.createServer({
+    // cert: fs.readFileSync(tlsCertificate),
+    // key: fs.readFileSync(tlsKey)
 }, httpHandle);
 
 const wss = new wslib.WebSocketServer({ server });
@@ -131,10 +133,15 @@ wss.on('connection', function connection(ws, request) {
     if (request.url.includes("role=player")) GuestWSHandler(ws, request.url);
 });
 
-server.listen(443);
+server.listen(8080, "0.0.0.0");
 
 var roomObjects = {};
+var roomVersions = {};
+var roomRestrictions = {};
 var roomAcls = {};
+var roomTypes = {};
+var roomLocks = {};
+var roomFroms = {};
 var presenceMap = {};
 var playerCount = 0;
 var hostPC = 2;
@@ -145,62 +152,147 @@ function HostWSHandler(ws) {
     playerCount = 0;
     presenceMap = {};
     roomObjects = {};
+    roomVersions = {};
+    roomRestrictions = {};
+    roomTypes = {};
+    roomLocks = {};
+    roomFroms = {};
     guestPC = [];
     roomLocked = false;
     presenceMap[1] = { socket: ws, id: "1", roles: { host: {} } };
     ws.on('message', function message(data) {
         var parsed = JSON.parse(data);
+        // console.log(util.inspect(parsed, false, null, true));
         var text = false;
+        var number = false;
+        var doodle = false;
         switch (parsed.opcode) {
             case "text/create":
             case "text/update":
             case "text/set":
                 text = true;
+            case "number/create":
+            case "number/update":
+            case "number/set":
+                number = true;
+            case "doodle/create":
+                doodle = true;
             case "object/create":
             case "object/update":
             case "object/set": // setting / updating objects to be passed around to players
+                if (doodle && !text && !number) {
+                    parsed.params["val"] = structuredClone(parsed.params);
+                    delete parsed.params["val"]["acl"];
+                }
                 roomObjects[parsed.params.key] = parsed.params.val;
+                // if (roomLocks[parsed.params.key] === true) {
+                //     return;
+                // }
+                roomLocks[parsed.params.key] = false;
+                if (roomVersions[parsed.params.key] !== undefined) {
+                    roomVersions[parsed.params.key] += 1;
+                } else {
+                    roomVersions[parsed.params.key] = 0;
+                }
                 if (parsed.params.acl) {
                     roomAcls[parsed.params.key] = parsed.params.acl[0].split(' ');
                 }
+                roomFroms[parsed.params.key] = 1;
                 console.log("Host modified object", parsed.params.key);
                 ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
+                let opcode = "object";
+                if (text) {
+                    opcode = "text";
+                } else if (number) {
+                    opcode = "number";
+                    roomRestrictions[parsed.params.key] = {};
+                    if (parsed.params.min)
+                        roomRestrictions[parsed.params.key]["min"] = parsed.params.min;
+                    if (parsed.params.max)
+                        roomRestrictions[parsed.params.key]["max"] = parsed.params.max;
+                    if (parsed.params.type)
+                        roomRestrictions[parsed.params.key]["type"] = parsed.params.type;
+                    if (parsed.params.increment)
+                        roomRestrictions[parsed.params.key]["increment"] = parsed.params.increment;
+                } else if (doodle) {
+                    opcode = "doodle"
+                    roomObjects[parsed.params.key]["lines"] = [];
+                }
+                roomTypes[parsed.params.key] = opcode;
                 for(var i = 2; i <= playerCount + 1; i++) {
                     // only deliver to clients if the acl allows it
-                    if (roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${i}` && roomAcls[parsed.params.key][1] != '*')) continue;
-                    presenceMap[i].socket.send(JSON.stringify({ "pc": ++guestPC[i - 2], "opcode": text ? "text" : "object", "result": parsed.params }));
+                    // console.log("host", roomAcls[parsed.params.key]?.[1]);
+                    let shouldnt_send = roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${i}` && roomAcls[parsed.params.key][1] != 'role:player' && roomAcls[parsed.params.key][1] != '*');
+                    // console.log(shouldnt_send);
+                    if (shouldnt_send) continue;
+                    let result = parsed.params;
+                    delete result["min"];
+                    delete result["max"];
+                    delete result["type"];
+                    delete result["increment"];
+                    delete result["accept"];
+                    delete result["reject"];
+                    if (number && !text) {
+                        result["restrictions"] = roomRestrictions[parsed.params.key];
+                    }
+                    if (!doodle || text || number) {
+                        result["version"] = roomVersions[parsed.params.key];
+                    } else {
+                        result["index"] = roomVersions[parsed.params.key];
+                    }
+                    result["from"] = 1;
+                    result = { "pc": ++guestPC[i - 2], "opcode": opcode, "result": result };
+                    // console.log(util.inspect(result, false, null, true));
+                    presenceMap[i].socket.send(JSON.stringify(result));
                 }
                 break;
-                case "drop": // delete the room object
-                    delete roomObjects[parsed.params.key];
-                    delete roomAcls[parsed.params.key];
-                    console.log("Host dropped object", parsed.params.key);
-                    ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
-                    break;
-                case "room/get-audience": // we don't support audiences, but just return 0
-                    ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "room/get-audience", "result": {"connections": 0} }));
-                    break;
-                case "room/lock":
-                    roomLocked = true;
-                    console.log("Host locked room");
-                    ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
-                    break;
-                case "room/exit": // kick all players
-                    console.log("Host closed room");
-                    appID = ""; // set app ID to nothing so rooms request fails
-                    for(var i = 2; i <= playerCount + 1; i++) {
-                        presenceMap[i].socket.terminate(); // disconnect all players
-                        presenceMap[i] = {};
-                    }
-                    ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
-                    ws.terminate();
-                    break;
-                case "room/start-audience": // start audience?, TODO
-                default:
-                    // just ignore and return default OK
-                    console.log("Unimplemented host opcode", parsed.opcode, "with data", parsed);
-                    ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
-                    break;
+            case "lock":
+                console.log("Host locked object", parsed.params.key);
+                // console.log(util.inspect(parsed, false, null, true));
+                roomLocks[parsed.params.key] = true;
+                let reply = { "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }
+                // console.log(util.inspect(message, false, null, true));
+                ws.send(JSON.stringify(reply));
+                break;
+            case "drop": // delete the room object
+                delete roomObjects[parsed.params.key];
+                delete roomVersions[parsed.params.key];
+                delete roomRestrictions[parsed.params.key];
+                delete roomTypes[parsed.params.key];
+                delete roomLocks[parsed.params.key];
+                delete roomFroms[parsed.params.key];
+                delete roomAcls[parsed.params.key];
+                console.log("Host dropped object", parsed.params.key);
+                ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
+                break;
+            case "room/get-audience": // we don't support audiences, but just return 0
+                ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "room/get-audience", "result": {"connections": 0} }));
+                break;
+            case "room/lock":
+                roomLocked = true;
+                console.log("Host locked room");
+                ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
+                break;
+            case "room/exit": // kick all players
+                console.log("Host closed room");
+                appID = ""; // set app ID to nothing so rooms request fails
+                for(var i = 2; i <= playerCount + 1; i++) {
+                    presenceMap[i].socket.terminate(); // disconnect all players
+                    presenceMap[i] = {};
+                }
+                ws.send(JSON.stringify({ "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} }));
+                ws.terminate();
+                break;
+            case "text/filter": // Passes text to ecast to check for banned content, just looks for a default OK in response, TODO?
+            case "game/start": // Probably telemetry, expects a default OK in response, TODO?
+            case "room/start-audience": // start audience?, TODO
+            default:
+                // just ignore and return default OK
+                console.log("Unimplemented host opcode", parsed.opcode, "with data", util.inspect(parsed, false, null, true));
+                let message = { "pc": ++hostPC, "re": parsed.seq, "opcode": "ok", "result": {} };
+                // console.log(message)
+                ws.send(JSON.stringify(message));
+                break;
         }
     });
     ws.on('close', function close() {
@@ -241,21 +333,107 @@ function GuestWSHandler(ws, url) {
     ws.on('message', function message(data) {
         var parsed = JSON.parse(data);
         var text = false;
+        var number = false;
+        var doodle = false;
         switch (parsed.opcode) {
             case "text/update":
             case "text/set":
                 text = true;
+            case "number/update":
+            case "number/set":
+                number = true;
+            case "doodle/stroke":
+                doodle = true;
             case "object/update":
             case "object/set": // setting / updating objects to be passed around to players
                 // TODO: implement permissions checks
-                if (roomObjects[parsed.params.key]) { // only update object if it exists
+                if (roomVersions[parsed.params.key] >= 0) { // only update object if it exists
+                    if (roomLocks[parsed.params.key] === true) {
+                        return;
+                    }
+                    roomLocks[parsed.params.key] = false;
                     // verify that the ACL allows the object to be edited
-                    if (roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${2 + playerID}` && roomAcls[parsed.params.key][1] != '*')) return;
-                    roomObjects[parsed.params.key] = parsed.params.val;
+                    // if (roomAcls[parsed.params.key] && (roomAcls[parsed.params.key][1] != `id:${2 + playerID}` && roomAcls[parsed.params.key][1] != '*')) return;
+                    if (!doodle || text || number) {
+                        roomObjects[parsed.params.key] = parsed.params.val;
+                    } else {
+                        roomObjects[parsed.params.key]["lines"].push(...parsed.params.points);
+                    }
                     console.log("Client", 2 + playerID, "modified object", parsed.params.key);
-                    presenceMap[1].socket.send(JSON.stringify({ "pc": ++hostPC, "opcode": text ? "text" : "object", "result": parsed.params }));
+                    roomVersions[parsed.params.key] += 1;
+                    roomFroms[parsed.params.key] = 2 + playerID;
+                    let result = parsed.params;
+                    if (!doodle || text || number) {
+                        result["version"] = roomVersions[parsed.params.key];
+                    } else {
+                        result["index"] = roomVersions[parsed.params.key];
+                        result["val"] = structuredClone(result);
+                        delete result["val"]["key"];
+                    }
+                    result["from"] = 2 + playerID;
+                    let opcode = "object";
+                    if (text) {
+                        opcode = "text";
+                    } else if (number) {
+                        opcode = "number";
+                    } else if (doodle) {
+                        opcode = "doodle/line";
+                    }
+                    let message = { "pc": ++hostPC, "opcode": opcode, "result": result };
+                    presenceMap[1].socket.send(JSON.stringify(message));
                 }
                 ws.send(JSON.stringify({ "pc": ++guestPC[playerID], "re": parsed.seq, "opcode": "ok", "result": {} }));
+                break;
+            case "text/get":
+                text = true
+            case "number/get":
+                number = true
+            case "doodle/get":
+                doodle = true
+            case "object/get":
+                if (roomVersions[parsed.params.key] >= 0) { // only get object if exists
+                    let result = parsed.params;
+                    result["val"] = roomObjects[parsed.params.key];
+                    if (!doodle || text || number) {
+                        result["version"] = roomVersions[parsed.params.key];
+                    } else {
+                        result["index"] = roomVersions[parsed.params.key];
+                        delete result["val"]["key"];
+                    }
+                    result["from"] = roomFroms[parsed.params.key];
+                    let opcode = "object";
+                    if (text) {
+                        opcode = "text";
+                    } else if (number) {
+                        opcode = "number";
+                    } else if (doodle) {
+                        opcode = "doodle"
+                    }
+                    delete result["min"];
+                    delete result["max"];
+                    delete result["type"];
+                    delete result["increment"];
+                    delete result["accept"];
+                    delete result["reject"];
+                    delete result["acl"];
+                    if (number && !text) {
+                        result["restrictions"] = roomRestrictions[parsed.params.key];
+                    }
+                    let message = { "pc": ++guestPC[playerID], "re": parsed.seq, "opcode": opcode, "result": result };
+                    console.log(util.inspect(message, false, null, true));
+                    ws.send(JSON.stringify(message));
+                }
+                break;
+            case "lock":
+                console.log("Client", 2 + playerID, "locked object", parsed.params.key);
+                // console.log(util.inspect(parsed, false, null, true));
+                roomLocks[parsed.params.key] = true;
+                let message = { "pc": ++guestPC[playerID], "re": parsed.seq, "opcode": "ok", "result": {} }
+                // console.log(util.inspect(message, false, null, true));
+                ws.send(JSON.stringify(message));
+                message = { "pc": ++hostPC, "opcode": "lock", "result": { "key": parsed.params.key, "from": 2 + playerID } };
+                // console.log(util.inspect(message, false, null, true));
+                presenceMap[1].socket.send(JSON.stringify(message));
                 break;
             case "client/send":
                 console.log("Client", parsed.params.from, "sent data to", parsed.params.to, ":", parsed.params.body);
@@ -272,11 +450,13 @@ function GuestWSHandler(ws, url) {
     });
     // send welcome message
     console.log("Sending client welcome.");
+    
     var clientWelcome = {
         "pc": ++guestPC[playerID],
         "opcode": "client/welcome",
         "result": {
                 "id": 1 + playerCount,
+                "name": username,
                 "secret": "00000000-0000-0000-0000-000000000000",
                 "reconnect": false,
                 "deviceId": "0000000000.0000000000000000000000",
@@ -298,9 +478,14 @@ function GuestWSHandler(ws, url) {
     var objectKeys = Object.keys(roomObjects);
     for(var i = 0; i < objectKeys.length; i++) {
         // only deliver to clients if the acl allows it
-        if (roomAcls[objectKeys[i]] && (roomAcls[objectKeys[i]][1] != `id:${1 + playerCount}` && roomAcls[objectKeys[i]][1] != '*')) continue;
-        clientWelcome.result.entities[objectKeys[i]] = [ "object", { key: objectKeys[i], val: roomObjects[objectKeys[i]], version: 0, from: 1 } ];
+        // console.log("guest", roomAcls[objectKeys[i]]?.[1])
+        let role = ((1 + playerCount) == 1) ? 'role:host' : 'role:player';
+        let shouldnt_send = roomAcls[objectKeys[i]] && (roomAcls[objectKeys[i]][1] != `id:${1 + playerCount}` && roomAcls[objectKeys[i]][1] != role && roomAcls[objectKeys[i]][1] != '*');
+        // console.log(shouldnt_send);
+        if (shouldnt_send)  continue;
+        clientWelcome.result.entities[objectKeys[i]] = [ roomTypes[objectKeys[i]], { key: objectKeys[i], val: roomObjects[objectKeys[i]], version: roomVersions[objectKeys[i]], from: 1 }, { "locked": roomLocks[objectKeys[i]] } ];
     }
+    // console.log(util.inspect(clientWelcome, false, null, true));
     ws.send(JSON.stringify(clientWelcome));
     // send client connected message
     var clientConnected = {
