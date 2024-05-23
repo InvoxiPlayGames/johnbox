@@ -68,7 +68,9 @@ cargo run --release -- --offline
 
 There are shell scripts in this project that serve to cache game assets in the server's cache that can't be retrieved in one playthrough.
 
-You can run each script with your `steam/steamapps/common` directory, and the server's accessible host (HTTPS required) as arguments
+You can run each script with your `steam/steamapps/common` directory, and the server's accessible host (HTTPS required) as arguments.
+
+The server should be running when you run these scripts.
 
 ```shell
 sh update_dodoremi.sh "$HOME/.steam/steam/steamapps/common" "192.168.1.10"
