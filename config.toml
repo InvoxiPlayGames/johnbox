@@ -1,0 +1,15 @@
+accessible_host = "192.168.1.10"
+
+[ecast]
+# op_mode = "proxy"
+op_mode = "native"
+# server_url = "http://192.168.1.10:8080"
+server_url = "https://ecast.jackboxgames.com"
+
+[tls]
+cert = "certs/192.168.1.10.pem"
+key = "certs/192.168.1.10-key.pem"
+
+[ports]
+https = 443
+http = 80

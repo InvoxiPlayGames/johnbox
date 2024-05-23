@@ -1,2 +1,4 @@
-.vscode/
-jackprox.js
+/target
+/certs
+/jb_cache
+*log
