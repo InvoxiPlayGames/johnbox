@@ -1,12 +1,20 @@
+# The host which your Jackbox games can access (through HTTPS)
 accessible_host = "192.168.1.10"
+# The path which cached `jackbox.tv` assets are stored
 cache_path = "jb_cache"
 
 [ecast]
+# Any connections that go through in proxy mode will be proxied to the `server_url`
 # op_mode = "proxy"
-op_mode = "native"
-# server_url = "http://192.168.1.10:8080"
+# The jackbox server to proxy to, only matters if op_mode="proxy"
 server_url = "https://ecast.jackboxgames.com"
+# Native mode means that all games are handled by *this* server implementation
+op_mode = "native"
 
+# %%%% READ %%%%
+# Make sure these certificates are registered with your system.
+# If you can access the server through a web browser with no security
+# warnings, it should work.
 [tls]
 cert = "certs/192.168.1.10.pem"
 key = "certs/192.168.1.10-key.pem"
