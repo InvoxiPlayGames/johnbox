@@ -303,11 +303,6 @@ pub async fn handle_socket(
 
     client.disconnect().await;
     tracing::debug!(id = client.profile.id, role = ?client.profile.role, "Leaving room");
-    if client.profile.role == Role::Host {
-        tracing::debug!(code, "Removing room");
-        room_map.remove(&code);
-        room.exit.notify_waiters();
-    }
 
     Ok(())
 }
