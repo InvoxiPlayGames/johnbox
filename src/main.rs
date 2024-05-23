@@ -11,7 +11,7 @@ use std::{
 use axum::{
     extract::{Host, OriginalUri, Path, Query, WebSocketUpgrade},
     handler::HandlerWithoutStateExt,
-    http::{HeaderMap, StatusCode, Uri},
+    http::{uri::PathAndQuery, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     BoxError, Json, Router,
@@ -29,6 +29,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tree_sitter::{Parser, QueryCursor};
 use ws::Room;
 
+mod acl;
+mod entity;
 mod http_cache;
 mod ws;
 
@@ -333,6 +335,21 @@ async fn serve_jb_tv(
     headers: HeaderMap,
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, (StatusCode, String)> {
+    if uri.query().is_some_and(|q| q.contains("&s=")) {
+        let mut new_query: String = uri.path().to_owned();
+        new_query.extend(
+            uri.query()
+                .unwrap()
+                .split('&')
+                .filter(|q| !q.starts_with("s="))
+                .flat_map(|q| [q, "&"]),
+        );
+        new_query.pop();
+        let mut parts = uri.into_parts();
+        parts.path_and_query = Some(PathAndQuery::try_from(new_query).unwrap());
+
+        return Ok(Redirect::to(&Uri::from_parts(parts).unwrap().to_string()).into_response());
+    }
     if headers
         .get(USER_AGENT)
         .map(|a| a.to_str().unwrap().starts_with("JackboxGames"))
