@@ -42,6 +42,12 @@ A private server implementation in Rust for modern Jackbox Games services (Ecast
 
 ## Usage
 
+### Configuration
+
+The configuration file is located in `config.toml`, and an example configuration is already in that file. Make sure you edit this before you run the server.
+
+You should also edit the `jbg.config.jet` file in each minigame folder. and set the `serverUrl` parameter to the accessible host you set in `config.toml` (set the `joinUrl` parameter to change the URL displayed by the game to something different)
+
 ### Running
 
 Building and running is relatively simple. Just install Rust and run
@@ -50,9 +56,15 @@ Building and running is relatively simple. Just install Rust and run
 cargo run --release
 ```
 
-Or look in releases for a binary.
+Or look in [releases](releases) for a binary.
 
-## Caching games
+If you don't have an internet connection when running, and you have some games cached, try running in offline mode
+
+```shell
+cargo run --release -- --offline
+```
+
+### Caching games
 
 There are shell scripts in this project that serve to cache game assets in the server's cache that can't be retrieved in one playthrough.
 
