@@ -93,8 +93,7 @@ pub struct WSQuery {
     pub role: Role,
     #[serde(rename = "host-token")]
     pub host_token: Option<Token>,
-    #[serde(default)]
-    pub secret: String,
+    pub secret: Option<Token>,
     #[serde(default)]
     // Id will never be 0 (this works)
     id: i64,
@@ -195,6 +194,7 @@ struct Config {
     tls: Tls,
     ports: Ports,
     accessible_host: String,
+    cache_path: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -259,7 +259,6 @@ async fn main() {
         room_map: Arc::new(DashMap::new()),
         http_cache: http_cache::HttpCache {
             client: reqwest::Client::new(),
-            cache_path: std::path::Path::new("jb_cache"),
             ts_parser: Arc::new(Mutex::new((Parser::new(), QueryCursor::new()))),
             js_lang: Arc::new((js_lang, fragment_query)),
             css_lang: Arc::new((css_lang, css_query)),
@@ -325,7 +324,12 @@ async fn play_handler(
         let room_map = Arc::clone(&state.room_map);
         let room = Arc::clone(config.value());
         ws.protocols(["ecast-v0"])
-            .on_upgrade(move |socket| ws::handle_socket(socket, code, url_query, room, room_map))
+            .on_upgrade(move |socket| async move {
+                if let Err(e) = ws::handle_socket(socket, code, url_query, room, room_map).await {
+                    tracing::error!(id = e.0.profile.id, role = ?e.0.profile.role, error = %e.1, "Error in WebSocket");
+                    e.0.disconnect().await;
+                }
+            })
             .into_response()
     }
 }
@@ -360,7 +364,13 @@ async fn serve_jb_tv(
     } else {
         return state
             .http_cache
-            .get_cached(uri, headers, state.offline, &state.config.accessible_host)
+            .get_cached(
+                uri,
+                headers,
+                state.offline,
+                &state.config.accessible_host,
+                &state.config.cache_path,
+            )
             .await;
         // Ok(().into_response())
     }

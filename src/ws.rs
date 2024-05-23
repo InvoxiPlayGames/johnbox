@@ -1,11 +1,13 @@
 use std::{
     borrow::Cow,
     io::{Read, Write},
+    ops::DerefMut,
     process::Stdio,
     sync::{
         atomic::{AtomicI64, AtomicU64},
         Arc,
     },
+    time::Duration,
 };
 
 use axum::extract::{
@@ -28,8 +30,8 @@ use crate::{
 type Connections = DashMap<i64, Arc<Client>>;
 
 pub struct Client {
-    profile: JBProfile,
-    socket: Mutex<SplitSink<WebSocket, Message>>,
+    pub profile: JBProfile,
+    socket: Mutex<Option<SplitSink<WebSocket, Message>>>,
     pc: AtomicU64,
 }
 
@@ -39,27 +41,52 @@ impl Client {
 
         tracing::debug!(id = self.profile.id, role = ?self.profile.role, ?message, "Sending WS Message");
 
-        self.socket
-            .lock()
+        if let Err(e) = self
+            .send_ws_message(Message::Text(serde_json::to_string(&message).unwrap()))
             .await
-            .send(Message::Text(serde_json::to_string(&message).unwrap()))
-            .await
+        {
+            self.disconnect().await;
+            return Err(e);
+        }
+
+        Ok(())
     }
 
     async fn pong(&self, d: Vec<u8>) -> Result<(), axum::Error> {
-        self.socket.lock().await.send(Message::Pong(d)).await
+        if let Err(e) = self.send_ws_message(Message::Pong(d)).await {
+            self.disconnect().await;
+            return Err(e);
+        }
+
+        Ok(())
     }
 
     async fn close(&self) -> Result<(), axum::Error> {
         tracing::debug!(id = self.profile.id, role = ?self.profile.role, "Closing connection");
-        self.socket
-            .lock()
-            .await
-            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
-                code: 1000,
-                reason: Cow::Borrowed("normal close"),
-            })))
-            .await
+
+        self.send_ws_message(Message::Close(Some(axum::extract::ws::CloseFrame {
+            code: 1000,
+            reason: Cow::Borrowed("normal close"),
+        })))
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn disconnect(&self) {
+        let _ = self.close().await;
+        *self.socket.lock().await = None;
+    }
+
+    async fn send_ws_message(&self, message: Message) -> Result<(), axum::Error> {
+        if let Some(socket) = self.socket.lock().await.deref_mut() {
+            tokio::select! {
+                r = socket.send(message) => r?,
+                _ = tokio::time::sleep(Duration::from_secs(3)) => tracing::error!(id = self.profile.id, role = ?self.profile.role, "Connection timed out")
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -73,10 +100,10 @@ pub struct Room {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct JBProfile {
-    id: i64,
+pub struct JBProfile {
+    pub id: i64,
     user_id: String,
-    role: Role,
+    pub role: Role,
     name: String,
     roles: serde_json::Value,
     room: String,
@@ -153,12 +180,12 @@ pub async fn handle_socket(
     Query(url_query): Query<WSQuery>,
     room: Arc<Room>,
     room_map: Arc<DashMap<String, Arc<Room>>>,
-) {
+) -> Result<(), (Arc<Client>, axum::Error)> {
     let (ws_write, mut ws_read) = socket.split();
 
     let (reconnect, client): (bool, Arc<Client>) = {
         if let Some(profile) = room.connections.get(&url_query.id) {
-            *profile.value().socket.lock().await = ws_write;
+            *profile.value().socket.lock().await = Some(ws_write);
             (true, Arc::clone(profile.value()))
         } else {
             let serial = room
@@ -188,7 +215,7 @@ pub async fn handle_socket(
             let profile = Arc::new(Client {
                 pc: 0.into(),
                 profile,
-                socket: Mutex::new(ws_write),
+                socket: Mutex::new(Some(ws_write)),
             });
             room.connections.insert(serial, Arc::clone(&profile));
             (false, profile)
@@ -202,7 +229,7 @@ pub async fn handle_socket(
             opcode: Cow::Borrowed("client/welcome"),
             result: &serde_json::to_value(ClientWelcome {
                 id: client.profile.id,
-                secret: url_query.host_token.unwrap_or_else(|| Token::random()),
+                secret: url_query.secret.unwrap_or_else(|| Token::random()),
                 reconnect,
                 device_id: Cow::Borrowed("0000000000.0000000000000000000000"),
                 entities: GetEntities {
@@ -216,7 +243,7 @@ pub async fn handle_socket(
             .unwrap(),
         })
         .await
-        .unwrap();
+        .map_err(|e| (Arc::clone(&client), e))?;
 
     {
         let client_connected = serde_json::to_value(ClientConnected {
@@ -243,7 +270,7 @@ pub async fn handle_socket(
                     result: &client_connected,
                 })
                 .await
-                .unwrap();
+                .map_err(|e| (Arc::clone(&client), e))?;
         }
     }
 
@@ -255,13 +282,15 @@ pub async fn handle_socket(
                         Message::Text(ref t) => serde_json::from_str(t).unwrap(),
                         Message::Close(_) => break 'outer,
                         Message::Ping(d) => {
-                            client.pong(d).await.unwrap();
+                            client.pong(d).await
+                                .map_err(|e| (Arc::clone(&client), e))?;
                             continue;
                         }
                         _ => continue,
                     };
                     tracing::debug!(id = client.profile.id, role = ?client.profile.role, ?message, "Recieved WS Message");
-                    process_message(&client, message, &room).await;
+                    process_message(&client, message, &room).await
+                        .map_err(|e| (Arc::clone(&client), e))?;
                 }
             }
             _ = room.exit.notified() => {
@@ -272,15 +301,22 @@ pub async fn handle_socket(
         }
     }
 
+    client.disconnect().await;
     tracing::debug!(id = client.profile.id, role = ?client.profile.role, "Leaving room");
     if client.profile.role == Role::Host {
+        tracing::debug!(code, "Removing room");
+        room_map.remove(&code);
         room.exit.notify_waiters();
     }
 
-    // TODO: Cleanup
+    Ok(())
 }
 
-async fn process_message(client: &Client, message: WSMessage, room: &Room) {
+async fn process_message(
+    client: &Client,
+    message: WSMessage,
+    room: &Room,
+) -> Result<(), axum::Error> {
     let mut split = message.opcode.split('/');
     let scope = split.next().unwrap();
     let action = split.next();
@@ -306,9 +342,20 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
             if !(has_been_created || is_unlocked || has_perms) && client.profile.role != Role::Host
             {
                 tracing::error!(id = client.profile.id, role = ?client.profile.role, acl = ?prev_value.as_ref().map(|pv| pv.value().2.acl.as_slice()), has_been_created, is_unlocked, has_perms, "Returned to sender");
-                return;
+                client
+                    .send(JBMessage {
+                        pc: 0,
+                        re: None,
+                        opcode: Cow::Borrowed("error"),
+                        result: &json!("Permission denied"),
+                    })
+                    .await?;
+
+                return Ok(());
             }
-            let jb_type: JBType = scope.parse().unwrap();
+            let jb_type: JBType = scope
+                .parse()
+                .map_err(|_| axum::Error::new(format!("Invalid JBType {}", scope)))?;
             let entity = JBEntity(
                 jb_type,
                 JBObject {
@@ -324,6 +371,7 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
                             let serde_json::Value::Number(n) = params.val else {
                                 unreachable!()
                             };
+                            // Infallible (check code)
                             JBValue::Number(n.as_f64().unwrap())
                         }
                         JBType::Object => {
@@ -367,8 +415,7 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
                         opcode: Cow::Borrowed(scope),
                         result: &value,
                     })
-                    .await
-                    .unwrap();
+                    .await?;
             }
             room.entities.insert(params.key, entity);
             client
@@ -378,8 +425,7 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
                     opcode: Cow::Borrowed("ok"),
                     result: &json!({}),
                 })
-                .await
-                .unwrap();
+                .await?;
         }
         Some("stroke") if scope == "doodle" => {
             let params: JBKeyWithLine = serde_json::from_value(message.params).unwrap();
@@ -412,8 +458,7 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
                                 opcode: Cow::Borrowed("doodle/line"),
                                 result: &line_value,
                             })
-                            .await
-                            .unwrap();
+                            .await?;
                     }
 
                     client
@@ -423,8 +468,7 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
                             opcode: Cow::Borrowed("ok"),
                             result: &json!({}),
                         })
-                        .await
-                        .unwrap();
+                        .await?;
                 }
             }
         }
@@ -438,8 +482,7 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
                         opcode: Cow::Borrowed(scope),
                         result: &serde_json::to_value(&entity.1).unwrap(),
                     })
-                    .await
-                    .unwrap();
+                    .await?;
             }
         }
         Some("exit") if scope == "room" => {
@@ -450,10 +493,9 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
                     opcode: Cow::Borrowed("ok"),
                     result: &json!({}),
                 })
-                .await
-                .unwrap();
+                .await?;
             for client in room.connections.iter() {
-                client.close().await.unwrap();
+                client.close().await?;
             }
             room.exit.notify_waiters();
         }
@@ -490,8 +532,7 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
                                 opcode: Cow::Borrowed("lock"),
                                 result: &value,
                             })
-                            .await
-                            .unwrap();
+                            .await?;
                     }
                 }
                 client
@@ -501,8 +542,7 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
                         opcode: Cow::Borrowed("ok"),
                         result: &json!({}),
                     })
-                    .await
-                    .unwrap();
+                    .await?;
             }
             "drop" => {
                 let params: JBKeyParam = serde_json::from_value(message.params).unwrap();
@@ -514,8 +554,7 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
                         opcode: Cow::Borrowed("ok"),
                         result: &json!({}),
                     })
-                    .await
-                    .unwrap();
+                    .await?;
             }
             _ => {
                 client
@@ -525,8 +564,7 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
                         opcode: Cow::Borrowed("ok"),
                         result: &json!({}),
                     })
-                    .await
-                    .unwrap();
+                    .await?;
             }
         },
         _ => {
@@ -537,10 +575,11 @@ async fn process_message(client: &Client, message: WSMessage, room: &Room) {
                     opcode: Cow::Borrowed("ok"),
                     result: &json!({}),
                 })
-                .await
-                .unwrap();
+                .await?;
         }
     }
+
+    Ok(())
 }
 
 struct GetEntities<'a> {

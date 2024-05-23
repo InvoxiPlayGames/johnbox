@@ -1,6 +1,7 @@
 use std::io::{BufReader, BufWriter};
 use std::ops::DerefMut;
 use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 use std::sync::Arc;
 
 use async_compression::brotli::EncoderParams;
@@ -28,7 +29,6 @@ use tree_sitter::QueryCursor;
 #[derive(Clone)]
 pub struct HttpCache {
     pub client: reqwest::Client,
-    pub cache_path: &'static std::path::Path,
     pub ts_parser: Arc<Mutex<(tree_sitter::Parser, QueryCursor)>>,
     pub js_lang: Arc<(tree_sitter::Language, tree_sitter::Query)>,
     pub css_lang: Arc<(tree_sitter::Language, tree_sitter::Query)>,
@@ -85,6 +85,7 @@ impl HttpCache {
         mut headers: HeaderMap,
         offline: bool,
         accessible_host: &str,
+        cache_path: &Path,
     ) -> Result<Response, (StatusCode, String)> {
         let mut uri_parts = uri.into_parts();
         if uri_parts
@@ -125,7 +126,7 @@ impl HttpCache {
             .flatten()
             .any(|s| s.trim() == "br");
 
-        let mut cached_resource_raw = self.cache_path.join(format!(
+        let mut cached_resource_raw = cache_path.join(format!(
             "{}/{}",
             uri.host().unwrap(),
             if uri.path() == "/" {
@@ -171,11 +172,9 @@ impl HttpCache {
         };
 
         let mut cached_resource = if resp.compressed {
-            self.cache_path
-                .join(format!("{}/{}.br", uri.host().unwrap(), resp.etag))
+            cache_path.join(format!("{}/{}.br", uri.host().unwrap(), resp.etag))
         } else {
-            self.cache_path
-                .join(format!("{}/{}", uri.host().unwrap(), resp.etag))
+            cache_path.join(format!("{}/{}", uri.host().unwrap(), resp.etag))
         };
 
         let part_path = cached_resource.with_extension("part.br");
@@ -206,7 +205,7 @@ impl HttpCache {
                         })?,
                 )
             };
-            cached_resource_raw = self.cache_path.join(format!(
+            cached_resource_raw = cache_path.join(format!(
                 "{}/{}",
                 uri.host().unwrap(),
                 if uri.path() == "/" {
@@ -234,11 +233,9 @@ impl HttpCache {
                 })?
             };
             cached_resource = if resp.compressed {
-                self.cache_path
-                    .join(format!("{}/{}.br", uri.host().unwrap(), resp.etag))
+                cache_path.join(format!("{}/{}.br", uri.host().unwrap(), resp.etag))
             } else {
-                self.cache_path
-                    .join(format!("{}/{}", uri.host().unwrap(), resp.etag))
+                cache_path.join(format!("{}/{}", uri.host().unwrap(), resp.etag))
             };
         }
 

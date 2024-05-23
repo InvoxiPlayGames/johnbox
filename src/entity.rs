@@ -5,6 +5,7 @@ use std::{
 
 use hex_color::HexColor;
 use serde::{Deserialize, Serialize};
+use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform};
 use tokio::io::Interest;
 
 use crate::{acl::Acl, Role};
@@ -94,6 +95,11 @@ impl JBAttributes {
     }
 }
 
+#[inline(always)]
+const fn one() -> usize {
+    1
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct JBDoodle {
@@ -102,9 +108,9 @@ pub struct JBDoodle {
     #[serde(default)]
     pub live: bool,
     #[serde(default)]
-    pub max_points: u32,
-    #[serde(default)]
-    pub max_layer: u32,
+    pub max_points: usize,
+    #[serde(default = "one")]
+    pub max_layer: usize,
     #[serde(default)]
     pub size: JBSize,
     #[serde(default)]
@@ -113,12 +119,69 @@ pub struct JBDoodle {
     pub lines: Vec<JBLine>,
 }
 
+impl JBDoodle {
+    pub fn render(&self) -> Pixmap {
+        let mut layers =
+            vec![Pixmap::new(self.size.width, self.size.height).unwrap(); self.max_layer];
+
+        for line in self.lines.iter() {
+            if !line.points.is_empty() {
+                let layer = layers.get_mut(line.layer).unwrap();
+                let mut path = PathBuilder::new();
+                let mut points = line.points.iter();
+                let move_to = points.next().unwrap();
+                path.move_to(move_to.x, move_to.y);
+
+                for point in points {
+                    path.line_to(point.x, point.y);
+                }
+
+                let path = path.finish().unwrap();
+                let paint = Paint {
+                    shader: tiny_skia::Shader::SolidColor(Color::from_rgba8(
+                        line.color.r,
+                        line.color.g,
+                        line.color.b,
+                        line.color.a,
+                    )),
+                    anti_alias: true,
+                    ..Default::default()
+                };
+                let stroke = Stroke {
+                    width: line.weight,
+                    ..Default::default()
+                };
+                layer.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+            }
+        }
+
+        let mut layers_iter = layers.iter_mut();
+
+        let first_layer = layers_iter.next().unwrap();
+        for layer in layers_iter {
+            first_layer.draw_pixmap(
+                0,
+                0,
+                layer.as_ref(),
+                &tiny_skia::PixmapPaint {
+                    opacity: 1.0,
+                    ..Default::default()
+                },
+                Transform::identity(),
+                None,
+            );
+        }
+
+        layers.swap_remove(0)
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct JBLine {
     color: HexColor,
-    weight: u32,
-    layer: u32,
+    weight: f32,
+    layer: usize,
     points: Vec<JBPoint>,
     #[serde(default)]
     pub index: usize,
@@ -126,8 +189,8 @@ pub struct JBLine {
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 struct JBPoint {
-    x: f64,
-    y: f64,
+    x: f32,
+    y: f32,
 }
 
 #[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
