@@ -3,13 +3,23 @@ accessible_host = "192.168.1.10"
 # The path which cached `jackbox.tv` assets are stored
 cache_path = "jb_cache"
 
+# Allows pseudo post-game sharing by rendering completed doodles to a directory
+# Only works with games that use the doodle API.
+[doodles]
+# Whether to render completed doodles or not
+render = true
+# Where doodles should be rendered
+path = "doodle_renders"
+
 [ecast]
 # Any connections that go through in proxy mode will be proxied to the `server_url`
-# op_mode = "proxy"
+op_mode = "proxy"
+# Native mode means that all games are handled by *this* server implementation
+# op_mode = "native"
 # The jackbox server to proxy to, only matters if op_mode="proxy"
 server_url = "https://ecast.jackboxgames.com"
-# Native mode means that all games are handled by *this* server implementation
-op_mode = "native"
+# server_url = "https://blobcast.jackboxgames.com"
+# server_url = "http://192.168.1.10:8080"
 
 # %%%% READ %%%%
 # Make sure these certificates are registered with your system.

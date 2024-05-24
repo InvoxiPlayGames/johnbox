@@ -24,7 +24,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use crate::{
     acl::Acl,
     entity::{JBAttributes, JBDoodle, JBEntity, JBLine, JBObject, JBRestrictions, JBType, JBValue},
-    JBRoom, Role, Token, WSQuery,
+    DoodleConfig, JBRoom, Role, Token, WSQuery,
 };
 
 type Connections = DashMap<i64, Arc<Client>>;
@@ -179,6 +179,7 @@ pub async fn handle_socket(
     Path(code): Path<String>,
     Query(url_query): Query<WSQuery>,
     room: Arc<Room>,
+    doodle_config: &DoodleConfig,
     room_map: Arc<DashMap<String, Arc<Room>>>,
 ) -> Result<(), (Arc<Client>, axum::Error)> {
     let (ws_write, mut ws_read) = socket.split();
@@ -289,7 +290,7 @@ pub async fn handle_socket(
                         _ => continue,
                     };
                     tracing::debug!(id = client.profile.id, role = ?client.profile.role, ?message, "Recieved WS Message");
-                    process_message(&client, message, &room).await
+                    process_message(&client, message, &room, doodle_config).await
                         .map_err(|e| (Arc::clone(&client), e))?;
                 }
             }
@@ -311,6 +312,7 @@ async fn process_message(
     client: &Client,
     message: WSMessage,
     room: &Room,
+    doodle_config: &DoodleConfig,
 ) -> Result<(), axum::Error> {
     let mut split = message.opcode.split('/');
     let scope = split.next().unwrap();
@@ -356,26 +358,24 @@ async fn process_message(
                 JBObject {
                     key: params.key.clone(),
                     val: match jb_type {
-                        JBType::Text => {
-                            let serde_json::Value::String(s) = params.val else {
-                                unreachable!()
-                            };
-                            JBValue::Text(s)
-                        }
-                        JBType::Number => {
-                            let serde_json::Value::Number(n) = params.val else {
-                                unreachable!()
-                            };
-                            // Infallible (check code)
-                            JBValue::Number(n.as_f64().unwrap())
-                        }
-                        JBType::Object => {
-                            let serde_json::Value::Object(o) = params.val else {
-                                unreachable!()
-                            };
-                            JBValue::Object(o)
-                        }
-                        JBType::Doodle => JBValue::Doodle(params.doodle),
+                        JBType::Text => match params.val {
+                            serde_json::Value::String(s) => Some(JBValue::Text(s)),
+                            serde_json::Value::Null => None,
+                            _ => unreachable!(),
+                        },
+                        JBType::Number => match params.val {
+                            serde_json::Value::Number(n) => {
+                                Some(JBValue::Number(n.as_f64().unwrap()))
+                            }
+                            serde_json::Value::Null => None,
+                            _ => unreachable!(),
+                        },
+                        JBType::Object => match params.val {
+                            serde_json::Value::Object(o) => Some(JBValue::Object(o)),
+                            serde_json::Value::Null => None,
+                            _ => unreachable!(),
+                        },
+                        JBType::Doodle => Some(JBValue::Doodle(params.doodle)),
                     },
                     restrictions: params.restrictions,
                     version: prev_value
@@ -426,7 +426,7 @@ async fn process_message(
             let params: JBKeyWithLine = serde_json::from_value(message.params).unwrap();
 
             if let Some(mut entity) = room.entities.get_mut(&params.key) {
-                if let JBValue::Doodle(ref mut doodle) = entity.value_mut().1.val {
+                if let Some(JBValue::Doodle(ref mut doodle)) = entity.value_mut().1.val {
                     let line_value = json!({
                          "key": params.key,
                          "from": client.profile.id,
@@ -528,6 +528,14 @@ async fn process_message(
                                 result: &value,
                             })
                             .await?;
+                    }
+
+                    if doodle_config.render {
+                        if let Some(JBValue::Doodle(ref d)) = entity.value().1.val {
+                            d.render()
+                                .save_png(doodle_config.path.join(format!("{}.png", entity.key())))
+                                .unwrap();
+                        }
                     }
                 }
                 client

@@ -3,7 +3,6 @@ use std::{
     sync::atomic::{AtomicBool, AtomicI64},
 };
 
-use hex_color::HexColor;
 use serde::{Deserialize, Serialize};
 use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform};
 use tokio::io::Interest;
@@ -17,7 +16,7 @@ pub struct JBEntity(pub JBType, pub JBObject, pub JBAttributes);
 #[serde(rename_all = "camelCase")]
 pub struct JBObject {
     pub key: String,
-    pub val: JBValue,
+    pub val: Option<JBValue>,
     pub restrictions: JBRestrictions,
     pub version: u32,
     pub from: AtomicI64,
@@ -104,7 +103,7 @@ const fn one() -> usize {
 #[serde(rename_all = "camelCase")]
 pub struct JBDoodle {
     #[serde(default)]
-    pub colors: Vec<HexColor>,
+    pub colors: Vec<csscolorparser::Color>,
     #[serde(default)]
     pub live: bool,
     #[serde(default)]
@@ -113,8 +112,7 @@ pub struct JBDoodle {
     pub max_layer: usize,
     #[serde(default)]
     pub size: JBSize,
-    #[serde(default)]
-    pub weights: Vec<u32>,
+    pub weights: Option<Vec<u32>>,
     #[serde(default)]
     pub lines: Vec<JBLine>,
 }
@@ -137,18 +135,20 @@ impl JBDoodle {
                 }
 
                 let path = path.finish().unwrap();
+                let line_color = line.color.to_rgba8();
                 let paint = Paint {
                     shader: tiny_skia::Shader::SolidColor(Color::from_rgba8(
-                        line.color.r,
-                        line.color.g,
-                        line.color.b,
-                        line.color.a,
+                        line_color[0],
+                        line_color[1],
+                        line_color[2],
+                        line_color[3],
                     )),
                     anti_alias: true,
                     ..Default::default()
                 };
                 let stroke = Stroke {
-                    width: line.weight,
+                    width: line.weight * 2.0,
+                    line_cap: tiny_skia::LineCap::Round,
                     ..Default::default()
                 };
                 layer.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
@@ -179,7 +179,7 @@ impl JBDoodle {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct JBLine {
-    color: HexColor,
+    color: csscolorparser::Color,
     weight: f32,
     layer: usize,
     points: Vec<JBPoint>,

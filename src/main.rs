@@ -37,7 +37,7 @@ mod ws;
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RoomRequest {
-    pub app_id: uuid::Uuid,
+    pub app_id: String,
     pub app_tag: String,
     pub audience_enabled: bool,
     pub max_players: u8,
@@ -190,11 +190,18 @@ enum EcastOpMode {
 
 #[derive(Deserialize)]
 struct Config {
+    doodles: DoodleConfig,
     ecast: Ecast,
     tls: Tls,
     ports: Ports,
     accessible_host: String,
     cache_path: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct DoodleConfig {
+    render: bool,
+    path: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -218,7 +225,7 @@ struct Ports {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct JBRoom {
-    pub app_id: uuid::Uuid,
+    pub app_id: String,
     pub app_tag: String,
     pub audience_enabled: bool,
     pub code: String,
@@ -271,6 +278,10 @@ async fn main() {
         offline: std::env::args().nth(1).is_some(),
     };
 
+    tokio::fs::create_dir_all(&state.config.doodles.path)
+        .await
+        .unwrap();
+
     let ports = state.config.ports;
 
     let app = Router::new()
@@ -281,6 +292,7 @@ async fn main() {
             "/@ecast.jackboxgames.com/api/v2/rooms/:code",
             get(rooms_get_handler),
         )
+        .route("/room", get(rooms_blobcast_handler))
         .route("/api/v2/app-configs/:app_tag", get(app_config_handler))
         .fallback(serve_jb_tv)
         .layer(TraceLayer::new_for_http())
@@ -304,13 +316,9 @@ async fn play_handler(
     let Some(config) = state.room_map.get(&code.0) else {
         return (StatusCode::NOT_FOUND, "Room not found").into_response();
     };
-    let server_url = state.config.ecast.server_url.as_ref();
     let mut host = match url_query.role {
         Role::Audience => "https://ecast.jackboxgames.com".to_owned(),
-        _ => match server_url {
-            Some(url) => url.clone(),
-            None => format!("wss://{}", state.config.accessible_host),
-        },
+        _ => format!("wss://{}", config.value().room_config.host),
     };
 
     host = host.replace("https://", "wss://");
@@ -323,9 +331,10 @@ async fn play_handler(
     } else {
         let room_map = Arc::clone(&state.room_map);
         let room = Arc::clone(config.value());
+        let config = Arc::clone(&state.config);
         ws.protocols(["ecast-v0"])
             .on_upgrade(move |socket| async move {
-                if let Err(e) = ws::handle_socket(socket, code, url_query, room, room_map).await {
+                if let Err(e) = ws::handle_socket(socket, code, url_query, room, &config.doodles, room_map).await {
                     tracing::error!(id = e.0.profile.id, role = ?e.0.profile.role, error = %e.1, "Error in WebSocket");
                     e.0.disconnect().await;
                 }
@@ -340,7 +349,7 @@ async fn serve_jb_tv(
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, (StatusCode, String)> {
     if uri.query().is_some_and(|q| q.contains("&s=")) {
-        let mut new_query: String = uri.path().to_owned();
+        let mut new_query: String = format!("{}?", uri.path());
         new_query.extend(
             uri.query()
                 .unwrap()
@@ -382,6 +391,7 @@ async fn rooms_handler(
 ) -> Json<JBResponse<RoomResponse>> {
     let mut code;
     let token;
+    let host;
     match state.config.ecast.op_mode {
         EcastOpMode::Proxy => {
             let url = format!(
@@ -414,6 +424,7 @@ async fn rooms_handler(
 
             code = response.body.code;
             token = response.body.token.parse().unwrap();
+            host = response.body.host;
         }
         EcastOpMode::Native => {
             fn random(size: usize) -> Vec<u8> {
@@ -431,6 +442,7 @@ async fn rooms_handler(
             code.make_ascii_uppercase();
 
             token = format!("{:02x}", Token::random());
+            host = state.config.accessible_host.to_owned();
         }
     }
 
@@ -445,7 +457,7 @@ async fn rooms_handler(
                 app_tag: room_req.app_tag.clone(),
                 audience_enabled: room_req.audience_enabled,
                 code: code.clone(),
-                host: state.config.accessible_host.clone(),
+                host,
                 audience_host: state.config.accessible_host.clone(),
                 locked: false,
                 full: false,
@@ -467,6 +479,95 @@ async fn rooms_handler(
             token,
         },
     })
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+struct BlobcastRoomResponse {
+    create: bool,
+    server: String,
+}
+
+async fn rooms_blobcast_handler(
+    axum::extract::State(state): axum::extract::State<State>,
+) -> Json<BlobcastRoomResponse> {
+    match state.config.ecast.op_mode {
+        EcastOpMode::Proxy => {
+            let url = format!(
+                "{}/room",
+                state
+                    .config
+                    .ecast
+                    .server_url
+                    .as_ref()
+                    .map(|s| s.as_str())
+                    .unwrap_or("https://blobcast.jackboxgames.com")
+            );
+
+            let mut response: BlobcastRoomResponse = state
+                .http_cache
+                .client
+                .get(&url)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+
+            tracing::debug!(
+                url = url,
+                response = ?response,
+                "blobcast request"
+            );
+
+            response.server = state.config.accessible_host.to_owned();
+
+            tracing::debug!(
+                url = url,
+                response = ?response,
+                "blobcast request"
+            );
+
+            return Json(response);
+        }
+        EcastOpMode::Native => {
+            unimplemented!()
+        }
+    }
+
+    // state.room_map.insert(
+    //     code.clone(),
+    //     Arc::new(Room {
+    //         entities: DashMap::new(),
+    //         connections: DashMap::new(),
+    //         room_serial: 1.into(),
+    //         room_config: JBRoom {
+    //             app_id: room_req.app_id,
+    //             app_tag: room_req.app_tag.clone(),
+    //             audience_enabled: room_req.audience_enabled,
+    //             code: code.clone(),
+    //             host: state.config.accessible_host.clone(),
+    //             audience_host: state.config.accessible_host.clone(),
+    //             locked: false,
+    //             full: false,
+    //             moderation_enabled: false,
+    //             password_required: false,
+    //             twitch_locked: false, // unimplemented
+    //             locale: Cow::Borrowed("en"),
+    //             keepalive: false,
+    //         },
+    //         exit: Notify::new(),
+    //     }),
+    // );
+
+    // Json(JBResponse {
+    //     ok: true,
+    //     body: RoomResponse {
+    //         host: state.config.accessible_host.clone(),
+    //         code,
+    //         token,
+    //     },
+    // })
 }
 
 async fn rooms_get_handler(

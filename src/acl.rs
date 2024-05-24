@@ -28,6 +28,9 @@ impl Default for Acl {
 
 impl Display for Acl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.interest.is_priority() {
+            write!(f, "s")?;
+        }
         if self.interest.is_readable() {
             write!(f, "r")?;
         }
@@ -69,12 +72,22 @@ impl FromStr for Acl {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let split = s.split_once(' ').ok_or(())?;
 
-        let interest = match split.0 {
-            "r" => Interest::READABLE,
-            "w" => Interest::WRITABLE,
-            "rw" => Interest::READABLE | Interest::WRITABLE,
-            _ => return Err(()),
-        };
+        let interest = split
+            .0
+            .chars()
+            .try_fold(None, |state, interest| match interest {
+                's' => Ok(Some(
+                    state.unwrap_or(Interest::PRIORITY) | Interest::PRIORITY,
+                )),
+                'r' => Ok(Some(
+                    state.unwrap_or(Interest::READABLE) | Interest::READABLE,
+                )),
+                'w' => Ok(Some(
+                    state.unwrap_or(Interest::WRITABLE) | Interest::WRITABLE,
+                )),
+                _ => return Err(()),
+            })?
+            .ok_or(())?;
 
         if split.1 == "*" {
             return Ok(Self {
