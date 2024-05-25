@@ -22,7 +22,8 @@ use super::{
     Role, WSQuery,
 };
 use crate::{
-    blobcast::ws::JBArgs, Client, ClientType, Connections, DoodleConfig, JBProfile, Room, Token,
+    blobcast::ws::{JBArgs, JBMessageArgs},
+    Client, ClientType, Connections, DoodleConfig, JBProfile, Room, Token,
 };
 
 #[derive(Serialize, Debug)]
@@ -176,7 +177,7 @@ pub async fn handle_socket(
                     host.value()
                         .send_blobcast(crate::blobcast::ws::JBMessage {
                             name: Cow::Borrowed("msg"),
-                            args: JBArgs {
+                            args: JBMessageArgs::Array([JBArgs {
                                 arg_type: Cow::Borrowed("Event"),
                                 event: Cow::Borrowed("CustomerJoinedRoom"),
                                 room_id: Cow::Borrowed(&room.room_config.code),
@@ -189,7 +190,7 @@ pub async fn handle_socket(
                                     "phone": ""
                                 }),
                                 ..Default::default()
-                            },
+                            }]),
                         })
                         .await
                         .map_err(|e| (Arc::clone(&client), e))?;
@@ -444,14 +445,14 @@ async fn process_message(
                     ClientType::Blobcast => {
                         con.send_blobcast(crate::blobcast::ws::JBMessage {
                             name: Cow::Borrowed("msg"),
-                            args: JBArgs {
+                            args: JBMessageArgs::Array([JBArgs {
                                 arg_type: Cow::Borrowed("Event"),
                                 event: Cow::Borrowed("CustomerMessage"),
                                 room_id: Cow::Borrowed(&room.room_config.code),
                                 user_id: Cow::Borrowed(&client.profile.user_id),
                                 message: params.body,
                                 ..Default::default()
-                            },
+                            }]),
                         })
                         .await?;
                     }

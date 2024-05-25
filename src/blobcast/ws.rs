@@ -50,7 +50,23 @@ impl<'a> FromStr for WSMessage<'a> {
 #[derive(Deserialize, Serialize, Debug)]
 pub struct JBMessage<'a> {
     pub name: Cow<'a, str>,
-    pub args: JBArgs<'a>,
+    pub args: JBMessageArgs<'a>,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(untagged)]
+pub enum JBMessageArgs<'a> {
+    Object(JBArgs<'a>),
+    Array([JBArgs<'a>; 1]),
+}
+
+impl<'a> JBMessageArgs<'a> {
+    pub fn get_args(&self) -> &JBArgs<'a> {
+        match self {
+            JBMessageArgs::Object(a) => a,
+            JBMessageArgs::Array(a) => &a[0],
+        }
+    }
 }
 
 fn object_is_empty(v: &serde_json::Value) -> bool {
@@ -129,10 +145,10 @@ pub async fn handle_socket(
         room_serial: 1.into(),
         room_config: crate::JBRoom {
             app_tag: super::APP_TAGS
-                .get(&create_room.message.args.app_id)
+                .get(&create_room.message.args.get_args().app_id)
                 .map(|s| s.to_string())
                 .unwrap_or_default(),
-            app_id: create_room.message.args.app_id,
+            app_id: create_room.message.args.get_args().app_id.clone(),
             audience_enabled: false,
             code: room_code.clone(),
             audience_host: host.clone(),
@@ -176,7 +192,13 @@ pub async fn handle_socket(
         let profile = JBProfile {
             id: serial,
             roles: json!({ "host": {} }),
-            user_id: create_room.message.args.user_id.into_owned(),
+            user_id: create_room
+                .message
+                .args
+                .get_args()
+                .user_id
+                .clone()
+                .into_owned(),
             role: Role::Host,
             name: String::new(),
         };
@@ -238,7 +260,7 @@ async fn process_message(
     message: WSMessage<'_>,
     room: &Room,
 ) -> Result<(), axum::Error> {
-    match message.message.args.action.as_ref() {
+    match message.message.args.get_args().action.as_ref() {
         "SetRoomBlob" => {
             let entity;
             {
@@ -248,7 +270,14 @@ async fn process_message(
                     JBObject {
                         key: "bc:room".to_owned(),
                         val: Some(JBValue::Object(
-                            message.message.args.blob.as_object().cloned().unwrap(),
+                            message
+                                .message
+                                .args
+                                .get_args()
+                                .blob
+                                .as_object()
+                                .cloned()
+                                .unwrap(),
                         )),
                         restrictions: JBRestrictions::default(),
                         version: prev_value
@@ -279,13 +308,13 @@ async fn process_message(
                             client
                                 .send_blobcast(JBMessage {
                                     name: Cow::Borrowed("msg"),
-                                    args: JBArgs {
+                                    args: JBMessageArgs::Array([JBArgs {
                                         arg_type: Cow::Borrowed("Event"),
                                         action: Cow::Borrowed("RoomBlobChanged"),
                                         room_id: Cow::Borrowed(&room.room_config.code),
                                         blob: serde_json::to_value(&entity.1.val).unwrap(),
                                         ..Default::default()
-                                    },
+                                    }]),
                                 })
                                 .await?;
                         }
@@ -296,12 +325,12 @@ async fn process_message(
             client
                 .send_blobcast(JBMessage {
                     name: Cow::Borrowed("msg"),
-                    args: JBArgs {
+                    args: JBMessageArgs::Array([JBArgs {
                         arg_type: Cow::Borrowed("Result"),
                         action: Cow::Borrowed("SetRoomBlob"),
                         success: Some(true),
                         ..Default::default()
-                    },
+                    }]),
                 })
                 .await?;
         }
@@ -310,7 +339,7 @@ async fn process_message(
             let entity;
             let key;
             {
-                let user_id = message.message.args.customer_user_id.as_ref();
+                let user_id = message.message.args.get_args().customer_user_id.as_ref();
                 eprintln!("key");
                 key = format!("bc:customer:{}", user_id);
                 eprintln!("prev_value");
@@ -327,7 +356,14 @@ async fn process_message(
                     JBObject {
                         key: key.clone(),
                         val: Some(JBValue::Object(
-                            message.message.args.blob.as_object().cloned().unwrap(),
+                            message
+                                .message
+                                .args
+                                .get_args()
+                                .blob
+                                .as_object()
+                                .cloned()
+                                .unwrap(),
                         )),
                         restrictions: JBRestrictions::default(),
                         version: prev_value
@@ -364,13 +400,13 @@ async fn process_message(
             client
                 .send_blobcast(JBMessage {
                     name: Cow::Borrowed("msg"),
-                    args: JBArgs {
+                    args: JBMessageArgs::Array([JBArgs {
                         arg_type: Cow::Borrowed("Result"),
                         action: Cow::Borrowed("LockRoom"),
                         success: Some(true),
                         room_id: Cow::Borrowed(&room.room_config.code),
                         ..Default::default()
-                    },
+                    }]),
                 })
                 .await?;
         }
