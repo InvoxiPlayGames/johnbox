@@ -1,13 +1,8 @@
 use std::{
     borrow::Cow,
     io::{Read, Write},
-    ops::DerefMut,
     process::Stdio,
-    sync::{
-        atomic::{AtomicI64, AtomicU64},
-        Arc,
-    },
-    time::Duration,
+    sync::Arc,
 };
 
 use axum::extract::{
@@ -15,10 +10,10 @@ use axum::extract::{
     Path, Query,
 };
 use dashmap::DashMap;
-use futures_util::{stream::SplitSink, SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde::{ser::SerializeMap, Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use super::{
@@ -26,97 +21,15 @@ use super::{
     entity::{JBAttributes, JBDoodle, JBEntity, JBLine, JBObject, JBRestrictions, JBType, JBValue},
     Role, WSQuery,
 };
-use crate::{DoodleConfig, JBRoom, Token};
-
-type Connections = DashMap<i64, Arc<Client>>;
-
-pub struct Client {
-    pub profile: JBProfile,
-    socket: Mutex<Option<SplitSink<WebSocket, Message>>>,
-    pc: AtomicU64,
-}
-
-impl Client {
-    async fn send(&self, mut message: JBMessage<'_>) -> Result<(), axum::Error> {
-        message.pc = self.pc.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-
-        tracing::debug!(id = self.profile.id, role = ?self.profile.role, ?message, "Sending WS Message");
-
-        if let Err(e) = self
-            .send_ws_message(Message::Text(serde_json::to_string(&message).unwrap()))
-            .await
-        {
-            self.disconnect().await;
-            return Err(e);
-        }
-
-        Ok(())
-    }
-
-    async fn pong(&self, d: Vec<u8>) -> Result<(), axum::Error> {
-        if let Err(e) = self.send_ws_message(Message::Pong(d)).await {
-            self.disconnect().await;
-            return Err(e);
-        }
-
-        Ok(())
-    }
-
-    async fn close(&self) -> Result<(), axum::Error> {
-        tracing::debug!(id = self.profile.id, role = ?self.profile.role, "Closing connection");
-
-        self.send_ws_message(Message::Close(Some(axum::extract::ws::CloseFrame {
-            code: 1000,
-            reason: Cow::Borrowed("normal close"),
-        })))
-        .await?;
-
-        Ok(())
-    }
-
-    pub async fn disconnect(&self) {
-        let _ = self.close().await;
-        *self.socket.lock().await = None;
-    }
-
-    async fn send_ws_message(&self, message: Message) -> Result<(), axum::Error> {
-        if let Some(socket) = self.socket.lock().await.deref_mut() {
-            tokio::select! {
-                r = socket.send(message) => r?,
-                _ = tokio::time::sleep(Duration::from_secs(3)) => tracing::error!(id = self.profile.id, role = ?self.profile.role, "Connection timed out")
-            }
-        }
-
-        Ok(())
-    }
-}
-
-pub struct Room {
-    pub entities: DashMap<String, JBEntity>,
-    pub connections: Connections,
-    pub room_serial: AtomicI64,
-    pub room_config: JBRoom,
-    pub exit: Notify,
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct JBProfile {
-    pub id: i64,
-    user_id: String,
-    pub role: Role,
-    name: String,
-    roles: serde_json::Value,
-    room: String,
-}
+use crate::{Client, ClientType, Connections, DoodleConfig, JBProfile, Room, Token};
 
 #[derive(Serialize, Debug)]
-struct JBMessage<'a> {
-    pc: u64,
+pub struct JBMessage<'a> {
+    pub pc: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    re: Option<u64>,
-    opcode: Cow<'a, str>,
-    result: &'a serde_json::Value,
+    pub re: Option<u64>,
+    pub opcode: Cow<'a, str>,
+    pub result: &'a serde_json::Value,
 }
 
 #[derive(Deserialize, Debug)]
@@ -205,7 +118,6 @@ pub async fn handle_socket(
                 Role::Host => JBProfile {
                     id: serial,
                     roles: json!({ "host": {} }),
-                    room: code.clone(),
                     user_id: url_query.user_id.clone(),
                     role: url_query.role,
                     name: url_query.name,
@@ -213,7 +125,6 @@ pub async fn handle_socket(
                 Role::Player => JBProfile {
                     id: serial,
                     roles: json!({ "player": { "name": url_query.name.clone() } }),
-                    room: code.clone(),
                     user_id: url_query.user_id.clone(),
                     role: url_query.role,
                     name: url_query.name,
@@ -225,6 +136,7 @@ pub async fn handle_socket(
                 pc: 0.into(),
                 profile,
                 socket: Mutex::new(Some(ws_write)),
+                client_type: ClientType::Ecast,
             });
             room.connections.insert(serial, Arc::clone(&profile));
             (false, profile)
@@ -232,7 +144,7 @@ pub async fn handle_socket(
     };
 
     client
-        .send(JBMessage {
+        .send_ecast(JBMessage {
             pc: 0,
             re: None,
             opcode: Cow::Borrowed("client/welcome"),
@@ -246,7 +158,7 @@ pub async fn handle_socket(
                     role: url_query.role,
                     id: client.profile.id,
                 },
-                here: GetHere(&room.connections),
+                here: GetHere(&room.connections, client.profile.id),
                 profile: &client.profile,
             })
             .unwrap(),
@@ -255,31 +167,53 @@ pub async fn handle_socket(
         .map_err(|e| (Arc::clone(&client), e))?;
 
     {
-        let client_connected = serde_json::to_value(ClientConnected {
-            id: client.profile.id,
-            user_id: &client.profile.user_id,
-            name: &client.profile.name,
-            role: client.profile.role,
-            reconnect,
-            profile: &client.profile,
-        })
-        .unwrap();
+        if let Some(host) = room.connections.get(&1) {
+            match host.value().client_type {
+                ClientType::Blobcast => {
+                    host.value()
+                        .send_blobcast(crate::blobcast::ws::JBMessage {
+                            name: Cow::Borrowed("msg"),
+                            args: json!([
+                                {
+                                    "type": "Event",
+                                    "event": "CustomerJoinedRoom",
+                                    "roomId": room.room_config.code,
+                                    "customerUserId": client.profile.user_id,
+                                    "customerName": client.profile.name,
+                                    "options": {
+                                        "roomcode": "",
+                                        "name": client.profile.name,
+                                        "email": "",
+                                        "phone": ""
+                                    }
+                                }
+                            ]),
+                        })
+                        .await
+                        .map_err(|e| (Arc::clone(&client), e))?;
+                }
+                ClientType::Ecast => {
+                    let client_connected = serde_json::to_value(ClientConnected {
+                        id: client.profile.id,
+                        user_id: &client.profile.user_id,
+                        name: &client.profile.name,
+                        role: client.profile.role,
+                        reconnect,
+                        profile: &client.profile,
+                    })
+                    .unwrap();
 
-        for client in room
-            .connections
-            .iter()
-            .filter(|c| c.value().profile.id != client.profile.id)
-        {
-            client
-                .value()
-                .send(JBMessage {
-                    pc: 0,
-                    re: None,
-                    opcode: Cow::Borrowed("client/connected"),
-                    result: &client_connected,
-                })
-                .await
-                .map_err(|e| (Arc::clone(&client), e))?;
+                    host.value()
+                        .send_ecast(JBMessage {
+                            pc: 0,
+                            re: None,
+                            opcode: Cow::Borrowed("client/connected"),
+                            result: &client_connected,
+                        })
+                        .await
+                        .map_err(|e| (Arc::clone(&client), e))?;
+                }
+            }
         }
     }
 
@@ -300,6 +234,8 @@ pub async fn handle_socket(
                     tracing::debug!(id = client.profile.id, role = ?client.profile.role, ?message, "Recieved WS Message");
                     process_message(&client, message, &room, doodle_config).await
                         .map_err(|e| (Arc::clone(&client), e))?;
+                } else {
+                    break;
                 }
             }
             _ = room.exit.notified() => {
@@ -348,7 +284,7 @@ async fn process_message(
             {
                 tracing::error!(id = client.profile.id, role = ?client.profile.role, acl = ?prev_value.as_ref().map(|pv| pv.value().2.acl.as_slice()), has_been_created, is_unlocked, has_perms, "Returned to sender");
                 client
-                    .send(JBMessage {
+                    .send_ecast(JBMessage {
                         pc: 0,
                         re: None,
                         opcode: Cow::Borrowed("error"),
@@ -412,7 +348,7 @@ async fn process_message(
                 })
             {
                 client
-                    .send(JBMessage {
+                    .send_ecast(JBMessage {
                         pc: 0,
                         re: None,
                         opcode: Cow::Borrowed(scope),
@@ -422,7 +358,7 @@ async fn process_message(
             }
             room.entities.insert(params.key, entity);
             client
-                .send(JBMessage {
+                .send_ecast(JBMessage {
                     pc: 0,
                     re: Some(message.seq),
                     opcode: Cow::Borrowed("ok"),
@@ -455,7 +391,7 @@ async fn process_message(
                         })
                     {
                         client
-                            .send(JBMessage {
+                            .send_ecast(JBMessage {
                                 pc: 0,
                                 re: None,
                                 opcode: Cow::Borrowed("doodle/line"),
@@ -465,7 +401,7 @@ async fn process_message(
                     }
 
                     client
-                        .send(JBMessage {
+                        .send_ecast(JBMessage {
                             pc: 0,
                             re: Some(message.seq),
                             opcode: Cow::Borrowed("ok"),
@@ -479,7 +415,7 @@ async fn process_message(
             let params: JBKeyParam = serde_json::from_value(message.params).unwrap();
             if let Some(entity) = room.entities.get(&params.key) {
                 client
-                    .send(JBMessage {
+                    .send_ecast(JBMessage {
                         pc: 0,
                         re: Some(message.seq),
                         opcode: Cow::Borrowed(scope),
@@ -491,17 +427,39 @@ async fn process_message(
         Some("send") if scope == "client" => {
             let params: JBClientSendParams =
                 serde_json::from_value(message.params.clone()).unwrap();
+            // Only used for blobcast compatibility?
+            assert_eq!(params.to, 1);
             if let Some(con) = room.connections.get(&params.to) {
-                con.send(JBMessage {
-                    pc: 0,
-                    re: None,
-                    opcode: Cow::Borrowed("client/send"),
-                    result: &message.params,
-                })
-                .await?;
+                assert_eq!(con.client_type, ClientType::Blobcast);
+                match con.client_type {
+                    ClientType::Blobcast => {
+                        con.send_blobcast(crate::blobcast::ws::JBMessage {
+                            name: Cow::Borrowed("msg"),
+                            args: json!([
+                                {
+                                    "type": "Event",
+                                    "event": "CustomerMessage",
+                                    "roomId": room.room_config.code,
+                                    "userId": client.profile.user_id,
+                                    "message": params.body
+                                }
+                            ]),
+                        })
+                        .await?;
+                    }
+                    ClientType::Ecast => {
+                        con.send_ecast(JBMessage {
+                            pc: 0,
+                            re: None,
+                            opcode: Cow::Borrowed("client/send"),
+                            result: &message.params,
+                        })
+                        .await?;
+                    }
+                }
             }
             client
-                .send(JBMessage {
+                .send_ecast(JBMessage {
                     pc: 0,
                     re: Some(message.seq),
                     opcode: Cow::Borrowed("ok"),
@@ -511,7 +469,7 @@ async fn process_message(
         }
         Some("exit") if scope == "room" => {
             client
-                .send(JBMessage {
+                .send_ecast(JBMessage {
                     pc: 0,
                     re: Some(message.seq),
                     opcode: Cow::Borrowed("ok"),
@@ -550,7 +508,7 @@ async fn process_message(
                         })
                     {
                         client
-                            .send(JBMessage {
+                            .send_ecast(JBMessage {
                                 pc: 0,
                                 re: None,
                                 opcode: Cow::Borrowed("lock"),
@@ -568,7 +526,7 @@ async fn process_message(
                     }
                 }
                 client
-                    .send(JBMessage {
+                    .send_ecast(JBMessage {
                         pc: 0,
                         re: Some(message.seq),
                         opcode: Cow::Borrowed("ok"),
@@ -580,7 +538,7 @@ async fn process_message(
                 let params: JBKeyParam = serde_json::from_value(message.params).unwrap();
                 room.entities.remove(&params.key);
                 client
-                    .send(JBMessage {
+                    .send_ecast(JBMessage {
                         pc: 0,
                         re: Some(message.seq),
                         opcode: Cow::Borrowed("ok"),
@@ -590,7 +548,7 @@ async fn process_message(
             }
             _ => {
                 client
-                    .send(JBMessage {
+                    .send_ecast(JBMessage {
                         pc: 0,
                         re: Some(message.seq),
                         opcode: Cow::Borrowed("ok"),
@@ -601,7 +559,7 @@ async fn process_message(
         },
         _ => {
             client
-                .send(JBMessage {
+                .send_ecast(JBMessage {
                     pc: 0,
                     re: Some(message.seq),
                     opcode: Cow::Borrowed("ok"),
@@ -641,7 +599,7 @@ impl<'a> Serialize for GetEntities<'a> {
     }
 }
 
-struct GetHere<'a>(&'a Connections);
+struct GetHere<'a>(&'a Connections, i64);
 
 impl<'a> Serialize for GetHere<'a> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -650,7 +608,9 @@ impl<'a> Serialize for GetHere<'a> {
     {
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
         for profile in self.0.iter() {
-            map.serialize_entry(profile.key(), &profile.value().profile)?;
+            if *profile.key() != self.1 {
+                map.serialize_entry(profile.key(), &profile.value().profile)?;
+            }
         }
         map.end()
     }

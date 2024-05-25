@@ -6,7 +6,6 @@ use axum::{
     Json,
 };
 use dashmap::DashMap;
-use rand::{rngs::OsRng, RngCore};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -149,7 +148,7 @@ pub async fn rooms_handler(
     axum::extract::State(state): axum::extract::State<State>,
     Json(room_req): Json<RoomRequest>,
 ) -> Json<JBResponse<RoomResponse>> {
-    let mut code;
+    let code;
     let token;
     let host;
     match state.config.ecast.op_mode {
@@ -187,20 +186,7 @@ pub async fn rooms_handler(
             host = response.body.host;
         }
         OpMode::Native => {
-            fn random(size: usize) -> Vec<u8> {
-                let mut bytes: Vec<u8> = vec![0; size];
-
-                OsRng.fill_bytes(&mut bytes);
-
-                bytes
-            }
-            const ALPHA_CAPITAL: [char; 26] = [
-                'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
-                'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-            ];
-            code = nanoid::nanoid!(4, &ALPHA_CAPITAL, random);
-            code.make_ascii_uppercase();
-
+            code = crate::room_id();
             token = format!("{:02x}", Token::random());
             host = state.config.accessible_host.to_owned();
         }
@@ -208,7 +194,7 @@ pub async fn rooms_handler(
 
     state.room_map.insert(
         code.clone(),
-        Arc::new(ws::Room {
+        Arc::new(crate::Room {
             entities: DashMap::new(),
             connections: DashMap::new(),
             room_serial: 1.into(),

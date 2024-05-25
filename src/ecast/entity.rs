@@ -54,7 +54,7 @@ impl FromStr for JBType {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 pub struct JBRestrictions {
     #[serde(default)]
     #[serde(skip_serializing_if = "String::is_empty")]

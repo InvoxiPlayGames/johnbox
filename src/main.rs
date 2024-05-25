@@ -2,12 +2,20 @@ use std::{
     borrow::Cow,
     fmt::{Debug, Display, LowerHex},
     net::SocketAddr,
+    ops::DerefMut,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicI64, AtomicU64},
+        Arc,
+    },
+    time::Duration,
 };
 
 use axum::{
-    extract::{Host, OriginalUri},
+    extract::{
+        ws::{Message, WebSocket},
+        Host, OriginalUri,
+    },
     handler::HandlerWithoutStateExt,
     http::{uri::PathAndQuery, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Redirect, Response},
@@ -16,13 +24,14 @@ use axum::{
 };
 use axum_server::tls_rustls::RustlsConfig;
 use dashmap::DashMap;
-use ecast::ws::Room;
+use futures_util::{stream::SplitSink, SinkExt};
 use helix_stdx::rope::RegexBuilder;
-use rand::{rngs::OsRng, RngCore};
+use rand::{rngs::OsRng, RngCore, SeedableRng};
+use rand_xoshiro::Xoshiro128PlusPlus;
 use reqwest::header::USER_AGENT;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tree_sitter::{Parser, QueryCursor};
@@ -88,6 +97,12 @@ impl Token {
     fn random() -> Token {
         let mut t = Token([0u8; 12]);
         OsRng.fill_bytes(&mut t.0);
+        t
+    }
+
+    fn from_seed(s: u64) -> Token {
+        let mut t = Token([0u8; 12]);
+        Xoshiro128PlusPlus::seed_from_u64(s).fill_bytes(&mut t.0);
         t
     }
 }
@@ -160,6 +175,119 @@ pub struct JBRoom {
     pub twitch_locked: bool,
     pub locale: Cow<'static, str>,
     pub keepalive: bool,
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub enum ClientType {
+    Blobcast,
+    Ecast,
+}
+
+type Connections = DashMap<i64, Arc<Client>>;
+
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct JBProfile {
+    pub id: i64,
+    user_id: String,
+    pub role: ecast::Role,
+    name: String,
+    roles: serde_json::Value,
+}
+
+pub struct Client {
+    pub profile: JBProfile,
+    socket: Mutex<Option<SplitSink<WebSocket, Message>>>,
+    pc: AtomicU64,
+    client_type: ClientType,
+}
+
+impl Client {
+    pub async fn send_ecast(
+        &self,
+        mut message: ecast::ws::JBMessage<'_>,
+    ) -> Result<(), axum::Error> {
+        message.pc = self.pc.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+
+        tracing::debug!(id = self.profile.id, role = ?self.profile.role, ?message, "Sending WS Message");
+
+        if let Err(e) = self
+            .send_ws_message(Message::Text(serde_json::to_string(&message).unwrap()))
+            .await
+        {
+            self.disconnect().await;
+            return Err(e);
+        }
+
+        Ok(())
+    }
+
+    pub async fn send_blobcast(
+        &self,
+        message: blobcast::ws::JBMessage<'_>,
+    ) -> Result<(), axum::Error> {
+        tracing::debug!(id = self.profile.id, role = ?self.profile.role, ?message, "Sending WS Message");
+
+        if let Err(e) = self
+            .send_ws_message(Message::Text(format!(
+                "5:::{}",
+                serde_json::to_string(&message).unwrap()
+            )))
+            .await
+        {
+            self.disconnect().await;
+            return Err(e);
+        }
+
+        Ok(())
+    }
+
+    pub async fn pong(&self, d: Vec<u8>) -> Result<(), axum::Error> {
+        if let Err(e) = self.send_ws_message(Message::Pong(d)).await {
+            self.disconnect().await;
+            return Err(e);
+        }
+
+        Ok(())
+    }
+
+    pub async fn close(&self) -> Result<(), axum::Error> {
+        tracing::debug!(id = self.profile.id, role = ?self.profile.role, "Closing connection");
+
+        self.send_ws_message(Message::Close(Some(axum::extract::ws::CloseFrame {
+            code: 1000,
+            reason: Cow::Borrowed("normal close"),
+        })))
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn disconnect(&self) {
+        *self.socket.lock().await = None;
+    }
+
+    pub async fn send_ws_message(&self, message: Message) -> Result<(), axum::Error> {
+        if let Some(socket) = self.socket.lock().await.deref_mut() {
+            tokio::select! {
+                r = socket.send(message) => r?,
+                _ = tokio::time::sleep(Duration::from_secs(3)) => {
+                    tracing::error!(id = self.profile.id, role = ?self.profile.role, "Connection timed out");
+                    self.disconnect().await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+pub struct Room {
+    pub entities: DashMap<String, ecast::entity::JBEntity>,
+    pub connections: Connections,
+    pub room_serial: AtomicI64,
+    pub room_config: JBRoom,
+    pub exit: Notify,
 }
 
 #[tokio::main]
@@ -279,6 +407,23 @@ async fn serve_jb_tv(
             .await;
         // Ok(().into_response())
     }
+}
+
+pub fn room_id() -> String {
+    fn random(size: usize) -> Vec<u8> {
+        let mut bytes: Vec<u8> = vec![0; size];
+
+        OsRng.fill_bytes(&mut bytes);
+
+        bytes
+    }
+    const ALPHA_CAPITAL: [char; 26] = [
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R',
+        'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+    ];
+    let mut code = nanoid::nanoid!(4, &ALPHA_CAPITAL, random);
+    code.make_ascii_uppercase();
+    code
 }
 
 async fn redirect_http_to_https(ports: Ports) -> Result<(), std::io::Error> {
