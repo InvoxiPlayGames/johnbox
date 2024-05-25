@@ -1,15 +1,13 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
     fmt::{Debug, Display, LowerHex},
     net::SocketAddr,
     path::PathBuf,
-    str::FromStr,
     sync::Arc,
 };
 
 use axum::{
-    extract::{Host, OriginalUri, Path, Query, WebSocketUpgrade},
+    extract::{Host, OriginalUri},
     handler::HandlerWithoutStateExt,
     http::{uri::PathAndQuery, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Redirect, Response},
@@ -18,99 +16,20 @@ use axum::{
 };
 use axum_server::tls_rustls::RustlsConfig;
 use dashmap::DashMap;
+use ecast::ws::Room;
 use helix_stdx::rope::RegexBuilder;
 use rand::{rngs::OsRng, RngCore};
 use reqwest::header::USER_AGENT;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, RwLock};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tree_sitter::{Parser, QueryCursor};
-use ws::Room;
 
-mod acl;
-mod entity;
+mod blobcast;
+mod ecast;
 mod http_cache;
-mod ws;
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct RoomRequest {
-    pub app_id: String,
-    pub app_tag: String,
-    pub audience_enabled: bool,
-    pub max_players: u8,
-    pub platform: String,
-    pub player_names: serde_json::Value,
-    pub time: f32,
-    pub twitch_locked: bool,
-    pub user_id: uuid::Uuid,
-    #[serde(default)]
-    pub host: String,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Role {
-    Host,
-    Player,
-    Audience,
-    Moderator,
-}
-
-impl Display for Role {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Host => write!(f, "host"),
-            Self::Player => write!(f, "player"),
-            Self::Audience => write!(f, "audience"),
-            Self::Moderator => write!(f, "moderator"),
-        }
-    }
-}
-
-impl FromStr for Role {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "host" => Ok(Self::Host),
-            "player" => Ok(Self::Player),
-            "audience" => Ok(Self::Audience),
-            "moderator" => Ok(Self::Moderator),
-            _ => Err(()),
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-pub struct WSQuery {
-    #[serde(rename = "user-id")]
-    pub user_id: String,
-    pub format: String,
-    pub name: String,
-    pub role: Role,
-    #[serde(rename = "host-token")]
-    pub host_token: Option<Token>,
-    pub secret: Option<Token>,
-    #[serde(default)]
-    // Id will never be 0 (this works)
-    id: i64,
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-struct JBResponse<T: Serialize + std::fmt::Debug> {
-    ok: bool,
-    body: T,
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-struct RoomResponse {
-    host: String,
-    code: String,
-    token: String,
-}
 
 #[derive(Debug)]
 pub struct Token([u8; 12]);
@@ -175,6 +94,7 @@ impl Token {
 
 #[derive(Clone)]
 struct State {
+    blobcast_host: Arc<RwLock<String>>,
     room_map: Arc<DashMap<String, Arc<Room>>>,
     http_cache: http_cache::HttpCache,
     config: Arc<Config>,
@@ -183,7 +103,7 @@ struct State {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum EcastOpMode {
+enum OpMode {
     Native,
     Proxy,
 }
@@ -192,6 +112,7 @@ enum EcastOpMode {
 struct Config {
     doodles: DoodleConfig,
     ecast: Ecast,
+    blobcast: Ecast,
     tls: Tls,
     ports: Ports,
     accessible_host: String,
@@ -206,7 +127,7 @@ struct DoodleConfig {
 
 #[derive(Deserialize)]
 struct Ecast {
-    op_mode: EcastOpMode,
+    op_mode: OpMode,
     server_url: Option<String>,
 }
 
@@ -219,6 +140,7 @@ struct Tls {
 #[derive(Deserialize, Clone, Copy)]
 struct Ports {
     https: u16,
+    blobcast: u16,
     http: Option<u16>,
 }
 
@@ -254,7 +176,7 @@ async fn main() {
         .unwrap();
 
     let fragment_regex = RegexBuilder::new()
-        .build("ecast.jackboxgames.com|bundles.jackbox.tv|jackbox.tv|cdn.jackboxgames.com|s3.amazonaws.com")
+        .build("blobcast.jackboxgames.com|ecast.jackboxgames.com|bundles.jackbox.tv|jackbox.tv|cdn.jackboxgames.com|s3.amazonaws.com")
         .unwrap();
     let content_to_compress = RegexBuilder::new().build("text/html|text/css|text/xml|text/javascript|application/javascript|application/x-javascript|application/json").unwrap();
 
@@ -263,6 +185,7 @@ async fn main() {
     let css_lang = tree_sitter_css::language();
     let css_query = tree_sitter::Query::new(&css_lang, "(plain_value) @frag").unwrap();
     let state = State {
+        blobcast_host: Arc::new(RwLock::new(String::new())),
         room_map: Arc::new(DashMap::new()),
         http_cache: http_cache::HttpCache {
             client: reqwest::Client::new(),
@@ -285,62 +208,34 @@ async fn main() {
     let ports = state.config.ports;
 
     let app = Router::new()
-        .route("/api/v2/rooms/:code/play", get(play_handler))
-        .route("/api/v2/audience/:code/play", get(play_handler))
-        .route("/api/v2/rooms", post(rooms_handler))
+        .route("/api/v2/rooms/:code/play", get(ecast::play_handler))
+        .route("/api/v2/audience/:code/play", get(ecast::play_handler))
+        .route("/api/v2/rooms", post(ecast::rooms_handler))
         .route(
             "/@ecast.jackboxgames.com/api/v2/rooms/:code",
-            get(rooms_get_handler),
+            get(ecast::rooms_get_handler),
         )
-        .route("/room", get(rooms_blobcast_handler))
-        .route("/api/v2/app-configs/:app_tag", get(app_config_handler))
+        .route(
+            "/api/v2/app-configs/:app_tag",
+            get(ecast::app_config_handler),
+        )
+        .route("/room", get(blobcast::rooms_handler))
+        .route("/accessToken", post(blobcast::access_token_handler))
+        .route("/socket.io/1", get(blobcast::load_handler))
+        .route("/socket.io/1/websocket/:id", get(blobcast::play_handler))
         .fallback(serve_jb_tv)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], ports.https));
     tracing::debug!("listening on {}", addr);
+    let blobcast_addr = SocketAddr::from(([0, 0, 0, 0], ports.blobcast));
     tokio::try_join!(
-        axum_server::bind_rustls(addr, tls_config).serve(app.into_make_service()),
+        axum_server::bind_rustls(addr, tls_config.clone()).serve(app.clone().into_make_service()),
+        axum_server::bind_rustls(blobcast_addr, tls_config).serve(app.into_make_service()),
         redirect_http_to_https(ports),
     )
     .unwrap();
-}
-
-async fn play_handler(
-    ws: WebSocketUpgrade,
-    axum::extract::State(state): axum::extract::State<State>,
-    code: Path<String>,
-    url_query: Query<WSQuery>,
-) -> impl IntoResponse {
-    let Some(config) = state.room_map.get(&code.0) else {
-        return (StatusCode::NOT_FOUND, "Room not found").into_response();
-    };
-    let mut host = match url_query.role {
-        Role::Audience => "https://ecast.jackboxgames.com".to_owned(),
-        _ => format!("wss://{}", config.value().room_config.host),
-    };
-
-    host = host.replace("https://", "wss://");
-    host = host.replace("http://", "ws://");
-
-    if matches!(state.config.ecast.op_mode, EcastOpMode::Proxy) {
-        ws.protocols(["ecast-v0"])
-            .on_upgrade(move |socket| ws::handle_socket_proxy(host, socket, code, url_query))
-            .into_response()
-    } else {
-        let room_map = Arc::clone(&state.room_map);
-        let room = Arc::clone(config.value());
-        let config = Arc::clone(&state.config);
-        ws.protocols(["ecast-v0"])
-            .on_upgrade(move |socket| async move {
-                if let Err(e) = ws::handle_socket(socket, code, url_query, room, &config.doodles, room_map).await {
-                    tracing::error!(id = e.0.profile.id, role = ?e.0.profile.role, error = %e.1, "Error in WebSocket");
-                    e.0.disconnect().await;
-                }
-            })
-            .into_response()
-    }
 }
 
 async fn serve_jb_tv(
@@ -348,6 +243,7 @@ async fn serve_jb_tv(
     headers: HeaderMap,
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, (StatusCode, String)> {
+    tracing::error!(?uri);
     if uri.query().is_some_and(|q| q.contains("&s=")) {
         let mut new_query: String = format!("{}?", uri.path());
         new_query.extend(
@@ -385,296 +281,6 @@ async fn serve_jb_tv(
     }
 }
 
-async fn rooms_handler(
-    axum::extract::State(state): axum::extract::State<State>,
-    Json(room_req): Json<RoomRequest>,
-) -> Json<JBResponse<RoomResponse>> {
-    let mut code;
-    let token;
-    let host;
-    match state.config.ecast.op_mode {
-        EcastOpMode::Proxy => {
-            let url = format!(
-                "{}/api/v2/rooms",
-                state
-                    .config
-                    .ecast
-                    .server_url
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or("https://ecast.jackboxgames.com")
-            );
-            let response: JBResponse<RoomResponse> = state
-                .http_cache
-                .client
-                .post(&url)
-                .json(&room_req)
-                .send()
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
-
-            tracing::debug!(
-                url = url,
-                response = ?response,
-                "ecast request"
-            );
-
-            code = response.body.code;
-            token = response.body.token.parse().unwrap();
-            host = response.body.host;
-        }
-        EcastOpMode::Native => {
-            fn random(size: usize) -> Vec<u8> {
-                let mut bytes: Vec<u8> = vec![0; size];
-
-                OsRng.fill_bytes(&mut bytes);
-
-                bytes
-            }
-            const ALPHA_CAPITAL: [char; 26] = [
-                'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
-                'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-            ];
-            code = nanoid::nanoid!(4, &ALPHA_CAPITAL, random);
-            code.make_ascii_uppercase();
-
-            token = format!("{:02x}", Token::random());
-            host = state.config.accessible_host.to_owned();
-        }
-    }
-
-    state.room_map.insert(
-        code.clone(),
-        Arc::new(Room {
-            entities: DashMap::new(),
-            connections: DashMap::new(),
-            room_serial: 1.into(),
-            room_config: JBRoom {
-                app_id: room_req.app_id,
-                app_tag: room_req.app_tag.clone(),
-                audience_enabled: room_req.audience_enabled,
-                code: code.clone(),
-                host,
-                audience_host: state.config.accessible_host.clone(),
-                locked: false,
-                full: false,
-                moderation_enabled: false,
-                password_required: false,
-                twitch_locked: false, // unimplemented
-                locale: Cow::Borrowed("en"),
-                keepalive: false,
-            },
-            exit: Notify::new(),
-        }),
-    );
-
-    Json(JBResponse {
-        ok: true,
-        body: RoomResponse {
-            host: state.config.accessible_host.clone(),
-            code,
-            token,
-        },
-    })
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-struct BlobcastRoomResponse {
-    create: bool,
-    server: String,
-}
-
-async fn rooms_blobcast_handler(
-    axum::extract::State(state): axum::extract::State<State>,
-) -> Json<BlobcastRoomResponse> {
-    match state.config.ecast.op_mode {
-        EcastOpMode::Proxy => {
-            let url = format!(
-                "{}/room",
-                state
-                    .config
-                    .ecast
-                    .server_url
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or("https://blobcast.jackboxgames.com")
-            );
-
-            let mut response: BlobcastRoomResponse = state
-                .http_cache
-                .client
-                .get(&url)
-                .send()
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
-
-            tracing::debug!(
-                url = url,
-                response = ?response,
-                "blobcast request"
-            );
-
-            response.server = state.config.accessible_host.to_owned();
-
-            tracing::debug!(
-                url = url,
-                response = ?response,
-                "blobcast request"
-            );
-
-            return Json(response);
-        }
-        EcastOpMode::Native => {
-            unimplemented!()
-        }
-    }
-
-    // state.room_map.insert(
-    //     code.clone(),
-    //     Arc::new(Room {
-    //         entities: DashMap::new(),
-    //         connections: DashMap::new(),
-    //         room_serial: 1.into(),
-    //         room_config: JBRoom {
-    //             app_id: room_req.app_id,
-    //             app_tag: room_req.app_tag.clone(),
-    //             audience_enabled: room_req.audience_enabled,
-    //             code: code.clone(),
-    //             host: state.config.accessible_host.clone(),
-    //             audience_host: state.config.accessible_host.clone(),
-    //             locked: false,
-    //             full: false,
-    //             moderation_enabled: false,
-    //             password_required: false,
-    //             twitch_locked: false, // unimplemented
-    //             locale: Cow::Borrowed("en"),
-    //             keepalive: false,
-    //         },
-    //         exit: Notify::new(),
-    //     }),
-    // );
-
-    // Json(JBResponse {
-    //     ok: true,
-    //     body: RoomResponse {
-    //         host: state.config.accessible_host.clone(),
-    //         code,
-    //         token,
-    //     },
-    // })
-}
-
-async fn rooms_get_handler(
-    axum::extract::State(state): axum::extract::State<State>,
-    Path(code): Path<String>,
-) -> Result<Json<JBResponse<JBRoom>>, (StatusCode, &'static str)> {
-    match state.config.ecast.op_mode {
-        EcastOpMode::Native => {
-            let room = state.room_map.get(&code);
-
-            if let Some(room) = room {
-                return Ok(Json(JBResponse {
-                    ok: true,
-                    body: room.value().room_config.clone(),
-                }));
-            } else {
-                return Err((StatusCode::NOT_FOUND, "Room not found"));
-            }
-        }
-        EcastOpMode::Proxy => {
-            let url = format!(
-                "{}/api/v2/rooms/{}",
-                state
-                    .config
-                    .ecast
-                    .server_url
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or("https://ecast.jackboxgames.com"),
-                code
-            );
-            let mut response: JBResponse<JBRoom> = state
-                .http_cache
-                .client
-                .get(&url)
-                .send()
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
-
-            tracing::debug!(
-                url = url,
-                response = ?response,
-                "ecast request"
-            );
-
-            response.body.host = state.config.accessible_host.clone();
-            response.body.audience_host = state.config.accessible_host.clone();
-
-            Ok(Json(response))
-        }
-    }
-}
-
-async fn app_config_handler(
-    Path(code): Path<String>,
-    Query(query): Query<HashMap<String, String>>,
-    axum::extract::State(state): axum::extract::State<State>,
-) -> Json<JBResponse<serde_json::Value>> {
-    match state.config.ecast.op_mode {
-        EcastOpMode::Native => {
-            return Json(JBResponse {
-                ok: true,
-                body: json!({
-                    "settings": {
-                        "serverUrl": state.config.accessible_host.clone()
-                    }
-                }),
-            });
-        }
-        EcastOpMode::Proxy => {
-            let url = format!(
-                "{}/api/v2/app-configs/{}?{}",
-                state
-                    .config
-                    .ecast
-                    .server_url
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or("https://ecast.jackboxgames.com"),
-                code,
-                serde_urlencoded::to_string(query).unwrap()
-            );
-            let response: JBResponse<serde_json::Value> = state
-                .http_cache
-                .client
-                .get(&url)
-                .send()
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
-
-            tracing::debug!(
-                url = url,
-                response = ?response,
-                "ecast request"
-            );
-
-            Json(response)
-        }
-    }
-}
-
 async fn redirect_http_to_https(ports: Ports) -> Result<(), std::io::Error> {
     if let Some(port) = ports.http {
         fn make_https(
@@ -683,6 +289,7 @@ async fn redirect_http_to_https(ports: Ports) -> Result<(), std::io::Error> {
             http: String,
             https: String,
         ) -> Result<Uri, BoxError> {
+            tracing::debug!(host, ?uri, http, https, "Received HTTP request");
             let mut parts = uri.into_parts();
 
             parts.scheme = Some(axum::http::uri::Scheme::HTTPS);

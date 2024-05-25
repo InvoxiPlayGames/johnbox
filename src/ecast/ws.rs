@@ -21,11 +21,12 @@ use serde_json::json;
 use tokio::sync::{Mutex, Notify};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use crate::{
+use super::{
     acl::Acl,
     entity::{JBAttributes, JBDoodle, JBEntity, JBLine, JBObject, JBRestrictions, JBType, JBValue},
-    DoodleConfig, JBRoom, Role, Token, WSQuery,
+    Role, WSQuery,
 };
+use crate::{DoodleConfig, JBRoom, Token};
 
 type Connections = DashMap<i64, Arc<Client>>;
 
@@ -149,6 +150,13 @@ struct JBKeyWithLine {
 #[derive(Deserialize, Debug)]
 struct JBKeyParam {
     key: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct JBClientSendParams {
+    from: i64,
+    to: i64,
+    body: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -480,6 +488,27 @@ async fn process_message(
                     .await?;
             }
         }
+        Some("send") if scope == "client" => {
+            let params: JBClientSendParams =
+                serde_json::from_value(message.params.clone()).unwrap();
+            if let Some(con) = room.connections.get(&params.to) {
+                con.send(JBMessage {
+                    pc: 0,
+                    re: None,
+                    opcode: Cow::Borrowed("client/send"),
+                    result: &message.params,
+                })
+                .await?;
+            }
+            client
+                .send(JBMessage {
+                    pc: 0,
+                    re: Some(message.seq),
+                    opcode: Cow::Borrowed("ok"),
+                    result: &json!({}),
+                })
+                .await?;
+        }
         Some("exit") if scope == "room" => {
             client
                 .send(JBMessage {
@@ -630,23 +659,12 @@ impl<'a> Serialize for GetHere<'a> {
 pub async fn handle_socket_proxy(
     host: String,
     socket: WebSocket,
-    Path(code): Path<String>,
-    Query(url_query): Query<WSQuery>,
+    ecast_req: String,
+    url_query: Query<WSQuery>,
 ) {
     let role = url_query.role;
     tracing::debug!(host = host, "proying to");
-    let mut ecast_req = format!(
-        "{}/api/v2/{}/{}/play?{}",
-        host,
-        match role {
-            Role::Audience => "audience",
-            _ => "rooms",
-        },
-        code,
-        serde_urlencoded::to_string(url_query).unwrap()
-    )
-    .into_client_request()
-    .unwrap();
+    let mut ecast_req = ecast_req.into_client_request().unwrap();
     ecast_req
         .headers_mut()
         .append("Sec-WebSocket-Protocol", "ecast-v0".parse().unwrap());

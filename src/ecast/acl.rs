@@ -3,7 +3,7 @@ use std::{borrow::Cow, fmt::Display, str::FromStr};
 use serde::{de::Error, Deserialize, Serialize};
 use tokio::io::Interest;
 
-use crate::Role;
+use super::Role;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Acl {

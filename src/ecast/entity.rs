@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform};
 use tokio::io::Interest;
 
-use crate::{acl::Acl, Role};
+use super::{acl::Acl, Role};
 
 #[derive(Serialize, Debug)]
 pub struct JBEntity(pub JBType, pub JBObject, pub JBAttributes);
