@@ -21,7 +21,9 @@ use super::{
     entity::{JBAttributes, JBDoodle, JBEntity, JBLine, JBObject, JBRestrictions, JBType, JBValue},
     Role, WSQuery,
 };
-use crate::{Client, ClientType, Connections, DoodleConfig, JBProfile, Room, Token};
+use crate::{
+    blobcast::ws::JBArgs, Client, ClientType, Connections, DoodleConfig, JBProfile, Room, Token,
+};
 
 #[derive(Serialize, Debug)]
 pub struct JBMessage<'a> {
@@ -67,7 +69,8 @@ struct JBKeyParam {
 
 #[derive(Deserialize, Debug)]
 struct JBClientSendParams {
-    from: i64,
+    #[serde(rename = "from")]
+    _from: i64,
     to: i64,
     body: serde_json::Value,
 }
@@ -173,21 +176,20 @@ pub async fn handle_socket(
                     host.value()
                         .send_blobcast(crate::blobcast::ws::JBMessage {
                             name: Cow::Borrowed("msg"),
-                            args: json!([
-                                {
-                                    "type": "Event",
-                                    "event": "CustomerJoinedRoom",
-                                    "roomId": room.room_config.code,
-                                    "customerUserId": client.profile.user_id,
-                                    "customerName": client.profile.name,
-                                    "options": {
-                                        "roomcode": "",
-                                        "name": client.profile.name,
-                                        "email": "",
-                                        "phone": ""
-                                    }
-                                }
-                            ]),
+                            args: JBArgs {
+                                arg_type: Cow::Borrowed("Event"),
+                                event: Cow::Borrowed("CustomerJoinedRoom"),
+                                room_id: Cow::Borrowed(&room.room_config.code),
+                                customer_user_id: Cow::Borrowed(&client.profile.user_id),
+                                customer_name: Cow::Borrowed(&client.profile.name),
+                                options: json!({
+                                    "roomcode": "",
+                                    "name": client.profile.name,
+                                    "email": "",
+                                    "phone": ""
+                                }),
+                                ..Default::default()
+                            },
                         })
                         .await
                         .map_err(|e| (Arc::clone(&client), e))?;
@@ -435,15 +437,14 @@ async fn process_message(
                     ClientType::Blobcast => {
                         con.send_blobcast(crate::blobcast::ws::JBMessage {
                             name: Cow::Borrowed("msg"),
-                            args: json!([
-                                {
-                                    "type": "Event",
-                                    "event": "CustomerMessage",
-                                    "roomId": room.room_config.code,
-                                    "userId": client.profile.user_id,
-                                    "message": params.body
-                                }
-                            ]),
+                            args: JBArgs {
+                                arg_type: Cow::Borrowed("Event"),
+                                event: Cow::Borrowed("CustomerMessage"),
+                                room_id: Cow::Borrowed(&room.room_config.code),
+                                user_id: Cow::Borrowed(&client.profile.user_id),
+                                message: params.body,
+                                ..Default::default()
+                            },
                         })
                         .await?;
                     }

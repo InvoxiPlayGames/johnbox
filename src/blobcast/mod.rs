@@ -208,30 +208,30 @@ pub async fn access_token_handler(
                 "blobcast request"
             );
 
-            // state.room_map.insert(
-            //     token_req.room_id.clone(),
-            //     Arc::new(crate::Room {
-            //         entities: DashMap::new(),
-            //         connections: DashMap::new(),
-            //         room_serial: 1.into(),
-            //         room_config: crate::JBRoom {
-            //             app_id: token_req.app_id.to_string(),
-            //             app_tag: String::new(),
-            //             audience_enabled: false,
-            //             code: token_req.room_id.clone(),
-            //             host: state.blobcast_host.read().await.clone(),
-            //             audience_host: state.config.ecast.server_url.clone().unwrap_or_default(),
-            //             locked: false,
-            //             full: false,
-            //             moderation_enabled: false,
-            //             password_required: false,
-            //             twitch_locked: false,
-            //             locale: Cow::Borrowed("en"),
-            //             keepalive: false,
-            //         },
-            //         exit: Notify::new(),
-            //     }),
-            // );
+            state.room_map.insert(
+                token_req.room_id.clone(),
+                Arc::new(crate::Room {
+                    entities: DashMap::new(),
+                    connections: DashMap::new(),
+                    room_serial: 1.into(),
+                    room_config: crate::JBRoom {
+                        app_id: token_req.app_id.to_string(),
+                        app_tag: String::new(),
+                        audience_enabled: false,
+                        code: token_req.room_id.clone(),
+                        host: state.blobcast_host.read().await.clone(),
+                        audience_host: state.config.ecast.server_url.clone().unwrap_or_default(),
+                        locked: false,
+                        full: false,
+                        moderation_enabled: false,
+                        password_required: false,
+                        twitch_locked: false,
+                        locale: Cow::Borrowed("en"),
+                        keepalive: false,
+                    },
+                    exit: Notify::new(),
+                }),
+            );
 
             response
         }

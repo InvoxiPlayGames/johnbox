@@ -28,7 +28,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 #[derive(Debug)]
 struct WSMessage<'a> {
-    opcode: u8,
+    _opcode: u8,
     message: JBMessage<'a>,
 }
 
@@ -40,28 +40,68 @@ impl<'a> FromStr for WSMessage<'a> {
         let opcode: u8 = s.0.parse().or(Err(()))?;
         let message: JBMessage = serde_json::from_str(&s.1[1..]).or(Err(()))?;
 
-        Ok(Self { opcode, message })
+        Ok(Self {
+            _opcode: opcode,
+            message,
+        })
     }
 }
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct JBMessage<'a> {
     pub name: Cow<'a, str>,
-    pub args: serde_json::Value,
+    pub args: JBArgs<'a>,
 }
 
-#[derive(Deserialize)]
+fn object_is_empty(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(s) => s.is_empty(),
+        serde_json::Value::Array(a) => a.is_empty(),
+        serde_json::Value::Object(o) => o.is_empty(),
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => false,
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateRoomArgs<'a> {
-    action: Cow<'a, str>,
-    app_id: String,
-    // A lot of telemetry stuff that we don't
-    // need to make allocations for
-    #[serde(skip)]
-    options: (),
+pub struct JBArgs<'a> {
+    #[serde(default)]
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub action: Cow<'a, str>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub event: Cow<'a, str>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub app_id: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "object_is_empty")]
+    pub options: serde_json::Value,
     #[serde(rename = "type")]
-    arg_type: Cow<'a, str>,
-    user_id: Cow<'a, str>,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub arg_type: Cow<'a, str>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "object_is_empty")]
+    pub blob: serde_json::Value,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "object_is_empty")]
+    pub message: serde_json::Value,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub user_id: Cow<'a, str>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub customer_user_id: Cow<'a, str>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub customer_name: Cow<'a, str>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub room_id: Cow<'a, str>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub success: Option<bool>,
 }
 
 pub async fn handle_socket(
@@ -81,7 +121,6 @@ pub async fn handle_socket(
     };
 
     let create_room = WSMessage::from_str(&create_room).unwrap();
-    let create_room: CreateRoomArgs = serde_json::from_value(create_room.message.args).unwrap();
     let room_code = crate::room_id();
 
     let room = Arc::new(Room {
@@ -90,10 +129,10 @@ pub async fn handle_socket(
         room_serial: 1.into(),
         room_config: crate::JBRoom {
             app_tag: super::APP_TAGS
-                .get(&create_room.app_id)
+                .get(&create_room.message.args.app_id)
                 .map(|s| s.to_string())
                 .unwrap_or_default(),
-            app_id: create_room.app_id,
+            app_id: create_room.message.args.app_id,
             audience_enabled: false,
             code: room_code.clone(),
             audience_host: host.clone(),
@@ -137,7 +176,7 @@ pub async fn handle_socket(
         let profile = JBProfile {
             id: serial,
             roles: json!({ "host": {} }),
-            user_id: create_room.user_id.into_owned(),
+            user_id: create_room.message.args.user_id.into_owned(),
             role: Role::Host,
             name: String::new(),
         };
@@ -193,8 +232,8 @@ async fn process_message(
     message: WSMessage<'_>,
     room: &Room,
 ) -> Result<(), axum::Error> {
-    match message.message.args.get("action").and_then(|a| a.as_str()) {
-        Some("SetRoomBlob") => {
+    match message.message.args.action.as_ref() {
+        "SetRoomBlob" => {
             let entity;
             {
                 let prev_value = room.entities.get("bc:room");
@@ -203,12 +242,7 @@ async fn process_message(
                     JBObject {
                         key: "bc:room".to_owned(),
                         val: Some(JBValue::Object(
-                            message
-                                .message
-                                .args
-                                .get("blob")
-                                .and_then(|b| b.as_object().cloned())
-                                .unwrap(),
+                            message.message.args.blob.as_object().cloned().unwrap(),
                         )),
                         restrictions: JBRestrictions::default(),
                         version: prev_value
@@ -239,14 +273,13 @@ async fn process_message(
                             client
                                 .send_blobcast(JBMessage {
                                     name: Cow::Borrowed("msg"),
-                                    args: json!([
-                                        {
-                                            "type": "Event",
-                                            "action": "RoomBlobChanged",
-                                            "roomId": room.room_config.code,
-                                            "blob": entity.1.val.as_ref().unwrap()
-                                        }
-                                    ]),
+                                    args: JBArgs {
+                                        arg_type: Cow::Borrowed("Event"),
+                                        action: Cow::Borrowed("RoomBlobChanged"),
+                                        room_id: Cow::Borrowed(&room.room_config.code),
+                                        blob: serde_json::to_value(&entity.1.val).unwrap(),
+                                        ..Default::default()
+                                    },
                                 })
                                 .await?;
                         }
@@ -257,28 +290,21 @@ async fn process_message(
             client
                 .send_blobcast(JBMessage {
                     name: Cow::Borrowed("msg"),
-                    args: json!([
-                        {
-                            "type": "Result",
-                            "action": "SetRoomBlob",
-                            "success": true
-                        }
-                    ]),
+                    args: JBArgs {
+                        arg_type: Cow::Borrowed("Result"),
+                        action: Cow::Borrowed("SetRoomBlob"),
+                        success: Some(true),
+                        ..Default::default()
+                    },
                 })
                 .await?;
         }
-        Some("SetCustomerBlob") => {
+        "SetCustomerBlob" => {
             eprintln!("user_id");
             let entity;
             let key;
             {
-                let user_id = message
-                    .message
-                    .args
-                    .get("customerUserId")
-                    .unwrap()
-                    .as_str()
-                    .unwrap();
+                let user_id = message.message.args.customer_user_id.as_ref();
                 eprintln!("key");
                 key = format!("bc:customer:{}", user_id);
                 eprintln!("prev_value");
@@ -295,12 +321,7 @@ async fn process_message(
                     JBObject {
                         key: key.clone(),
                         val: Some(JBValue::Object(
-                            message
-                                .message
-                                .args
-                                .get("blob")
-                                .and_then(|b| b.as_object().cloned())
-                                .unwrap(),
+                            message.message.args.blob.as_object().cloned().unwrap(),
                         )),
                         restrictions: JBRestrictions::default(),
                         version: prev_value
@@ -333,18 +354,17 @@ async fn process_message(
             room.entities.insert(key, entity);
             eprintln!("done");
         }
-        Some("LockRoom") => {
+        "LockRoom" => {
             client
                 .send_blobcast(JBMessage {
                     name: Cow::Borrowed("msg"),
-                    args: json!([
-                        {
-                            "type": "Result",
-                            "action": "LockRoom",
-                            "success": true,
-                            "roomId": room.room_config.code
-                        }
-                    ]),
+                    args: JBArgs {
+                        arg_type: Cow::Borrowed("Result"),
+                        action: Cow::Borrowed("LockRoom"),
+                        success: Some(true),
+                        room_id: Cow::Borrowed(&room.room_config.code),
+                        ..Default::default()
+                    },
                 })
                 .await?;
         }
