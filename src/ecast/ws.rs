@@ -222,22 +222,29 @@ pub async fn handle_socket(
     'outer: loop {
         tokio::select! {
             ws_message = ws_read.next() => {
-                if let Some(Ok(ws_message)) = ws_message {
-                    let message: WSMessage = match ws_message {
-                        Message::Text(ref t) => serde_json::from_str(t).unwrap(),
-                        Message::Close(_) => break 'outer,
-                        Message::Ping(d) => {
-                            client.pong(d).await
-                                .map_err(|e| (Arc::clone(&client), e))?;
-                            continue;
-                        }
-                        _ => continue,
-                    };
-                    tracing::debug!(id = client.profile.id, role = ?client.profile.role, ?message, "Recieved WS Message");
-                    process_message(&client, message, &room, doodle_config).await
-                        .map_err(|e| (Arc::clone(&client), e))?;
-                } else {
-                    break;
+                match ws_message {
+                    Some(Ok(ws_message)) => {
+                        let message: WSMessage = match ws_message {
+                            Message::Text(ref t) => serde_json::from_str(t).unwrap(),
+                            Message::Close(_) => break 'outer,
+                            Message::Ping(d) => {
+                                client.pong(d).await
+                                    .map_err(|e| (Arc::clone(&client), e))?;
+                                continue;
+                            }
+                            _ => continue,
+                        };
+                        tracing::debug!(id = client.profile.id, role = ?client.profile.role, ?message, "Recieved WS Message");
+                        process_message(&client, message, &room, doodle_config).await
+                            .map_err(|e| (Arc::clone(&client), e))?;
+                        tracing::debug!("Message Processed");
+                    }
+                    Some(Err(e)) => {
+                        tracing::error!(id = client.profile.id, role = ?client.profile.role, ?e, "Error in receiving message");
+                    }
+                    None => {
+                        break
+                    }
                 }
             }
             _ = room.exit.notified() => {

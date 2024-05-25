@@ -1,2 +1,2 @@
 #!/bin/sh
-rg '(blobcast.jackboxgames.com|ecast.jackboxgames.com|jackbox.tv|JACKBOX.TV)' -l ~/.steam/steam/steamapps/common/The\ Jackbox\ Party\ * | parallel sh update_jackbox_sed_orig.sh
+find ~/.steam/steam/steamapps/common/ -type f -name "jbg.config.jet" | parallel sh update_jackbox_sed_orig.sh
