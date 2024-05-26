@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, fmt::Display, str::FromStr, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 use axum::{
     extract::{Path, Query, WebSocketUpgrade},
@@ -11,10 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::Notify;
 
-use crate::{JBRoom, OpMode, State, Token};
+use crate::{acl::Role, JBRoom, OpMode, State, Token};
 
-pub mod acl;
-pub mod entity;
 pub mod ws;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -31,41 +29,6 @@ pub struct RoomRequest {
     pub user_id: uuid::Uuid,
     #[serde(default)]
     pub host: String,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Role {
-    Host,
-    #[default]
-    Player,
-    Audience,
-    Moderator,
-}
-
-impl Display for Role {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Host => write!(f, "host"),
-            Self::Player => write!(f, "player"),
-            Self::Audience => write!(f, "audience"),
-            Self::Moderator => write!(f, "moderator"),
-        }
-    }
-}
-
-impl FromStr for Role {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "host" => Ok(Self::Host),
-            "player" => Ok(Self::Player),
-            "audience" => Ok(Self::Audience),
-            "moderator" => Ok(Self::Moderator),
-            _ => Err(()),
-        }
-    }
 }
 
 #[derive(Deserialize, Serialize, Debug)]

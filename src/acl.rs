@@ -3,7 +3,40 @@ use std::{borrow::Cow, fmt::Display, str::FromStr};
 use serde::{de::Error, Deserialize, Serialize};
 use tokio::io::Interest;
 
-use super::Role;
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Host,
+    #[default]
+    Player,
+    Audience,
+    Moderator,
+}
+
+impl Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Host => write!(f, "host"),
+            Self::Player => write!(f, "player"),
+            Self::Audience => write!(f, "audience"),
+            Self::Moderator => write!(f, "moderator"),
+        }
+    }
+}
+
+impl FromStr for Role {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "host" => Ok(Self::Host),
+            "player" => Ok(Self::Player),
+            "audience" => Ok(Self::Audience),
+            "moderator" => Ok(Self::Moderator),
+            _ => Err(()),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Acl {

@@ -8,11 +8,8 @@ use std::{
 };
 
 use crate::{
-    ecast::{
-        acl::Acl,
-        entity::{JBAttributes, JBEntity, JBObject, JBRestrictions, JBType, JBValue},
-        Role,
-    },
+    acl::{Acl, Role},
+    entity::{JBAttributes, JBEntity, JBObject, JBRestrictions, JBType, JBValue},
     Client, ClientType, JBProfile, Room,
 };
 
@@ -375,7 +372,7 @@ async fn process_message(
                         locked: false.into(),
                         acl: vec![Acl {
                             interest: Interest::READABLE,
-                            principle: crate::ecast::acl::Principle::Id(*connection.key()),
+                            principle: crate::acl::Principle::Id(*connection.key()),
                         }],
                     },
                 )

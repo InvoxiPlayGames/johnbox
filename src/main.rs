@@ -36,8 +36,10 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tree_sitter::{Parser, QueryCursor};
 
+mod acl;
 mod blobcast;
 mod ecast;
+mod entity;
 mod http_cache;
 
 #[derive(Debug)]
@@ -190,7 +192,7 @@ type Connections = DashMap<i64, Arc<Client>>;
 pub struct JBProfile {
     pub id: i64,
     user_id: String,
-    pub role: ecast::Role,
+    pub role: acl::Role,
     name: String,
     roles: serde_json::Value,
 }
@@ -292,7 +294,7 @@ impl Client {
 }
 
 pub struct Room {
-    pub entities: DashMap<String, ecast::entity::JBEntity>,
+    pub entities: DashMap<String, entity::JBEntity>,
     pub connections: Connections,
     pub room_serial: AtomicI64,
     pub room_config: JBRoom,

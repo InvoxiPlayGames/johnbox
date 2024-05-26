@@ -17,15 +17,14 @@ use serde_json::json;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use super::{
-    acl::Acl,
-    entity::{JBAttributes, JBDoodle, JBEntity, JBLine, JBObject, JBRestrictions, JBType, JBValue},
-    Role, WSQuery,
-};
 use crate::{
+    acl::{Acl, Role},
     blobcast::ws::{JBArgs, JBMessageArgs},
+    entity::{JBAttributes, JBDoodle, JBEntity, JBLine, JBObject, JBRestrictions, JBType, JBValue},
     Client, ClientType, Connections, DoodleConfig, JBProfile, Room, Token,
 };
+
+use super::WSQuery;
 
 #[derive(Serialize, Debug)]
 pub struct JBMessage<'a> {
