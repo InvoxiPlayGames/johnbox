@@ -42,6 +42,17 @@ pub enum JBType {
     Doodle,
 }
 
+impl JBType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Number => "number",
+            Self::Object => "object",
+            Self::Doodle => "doodle",
+        }
+    }
+}
+
 impl FromStr for JBType {
     type Err = ();
 
@@ -70,11 +81,11 @@ pub struct JBRestrictions {
     increment: Option<f64>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct JBAttributes {
     pub locked: AtomicBool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip)]
     pub acl: Vec<Acl>,
 }
 

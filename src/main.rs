@@ -187,14 +187,21 @@ pub enum ClientType {
 
 type Connections = DashMap<i64, Arc<Client>>;
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct JBProfile {
     pub id: i64,
-    user_id: String,
+    pub user_id: String,
     pub role: acl::Role,
-    name: String,
-    roles: serde_json::Value,
+    pub name: String,
+    pub roles: JBProfileRoles,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum JBProfileRoles {
+    Host {},
+    Player { name: String },
 }
 
 pub struct Client {

@@ -14,6 +14,7 @@ use dashmap::DashMap;
 use futures_util::StreamExt;
 use serde::{ser::SerializeMap, Deserialize, Serialize};
 use serde_json::json;
+use serde_with::serde_as;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -21,7 +22,7 @@ use crate::{
     acl::{Acl, Role},
     blobcast::ws::{JBArgs, JBMessageArgs},
     entity::{JBAttributes, JBDoodle, JBEntity, JBLine, JBObject, JBRestrictions, JBType, JBValue},
-    Client, ClientType, Connections, DoodleConfig, JBProfile, Room, Token,
+    Client, ClientType, Connections, DoodleConfig, JBProfile, JBProfileRoles, Room, Token,
 };
 
 use super::WSQuery;
@@ -36,10 +37,90 @@ pub struct JBMessage<'a> {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde_as]
 struct WSMessage {
-    opcode: Cow<'static, str>,
-    params: serde_json::Value,
+    #[serde(flatten)]
+    #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
+    params: JBParams,
     seq: u64,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(tag = "opcode", content = "params")]
+enum JBParams {
+    #[serde(rename = "text/create")]
+    TextCreate(JBCreateParams),
+    #[serde(rename = "text/set")]
+    TextSet(JBCreateParams),
+    #[serde(rename = "text/update")]
+    TextUpdate(JBCreateParams),
+    #[serde(rename = "text/get")]
+    TextGet(JBKeyParam),
+    #[serde(rename = "number/create")]
+    NumberCreate(JBCreateParams),
+    #[serde(rename = "number/set")]
+    NumberSet(JBCreateParams),
+    #[serde(rename = "number/update")]
+    NumberUpdate(JBCreateParams),
+    #[serde(rename = "number/get")]
+    NumberGet(JBKeyParam),
+    #[serde(rename = "object/create")]
+    ObjectCreate(JBCreateParams),
+    #[serde(rename = "object/set")]
+    ObjectSet(JBCreateParams),
+    #[serde(rename = "object/update")]
+    ObjectUpdate(JBCreateParams),
+    #[serde(rename = "object/get")]
+    ObjectGet(JBKeyParam),
+    #[serde(rename = "doodle/create")]
+    DoodleCreate(JBCreateParams),
+    #[serde(rename = "doodle/set")]
+    DoodleSet(JBCreateParams),
+    #[serde(rename = "doodle/update")]
+    DoodleUpdate(JBCreateParams),
+    #[serde(rename = "doodle/get")]
+    DoodleGet(JBKeyParam),
+    #[serde(rename = "doodle/stroke")]
+    DoodleStroke(JBKeyWithLine),
+    #[serde(rename = "client/send")]
+    ClientSend(JBClientSendParams),
+    #[serde(rename = "room/exit")]
+    RoomExit(#[serde(skip)] ()),
+    #[serde(rename = "lock")]
+    Lock(JBKeyParam),
+    #[serde(rename = "drop")]
+    Drop(JBKeyParam),
+    #[default]
+    Error,
+}
+
+impl JBParams {
+    fn scope(&self) -> Option<JBType> {
+        match self {
+            Self::TextCreate(_) => Some(JBType::Text),
+            Self::TextSet(_) => Some(JBType::Text),
+            Self::TextUpdate(_) => Some(JBType::Text),
+            Self::TextGet(_) => Some(JBType::Text),
+            Self::NumberCreate(_) => Some(JBType::Number),
+            Self::NumberSet(_) => Some(JBType::Number),
+            Self::NumberUpdate(_) => Some(JBType::Number),
+            Self::NumberGet(_) => Some(JBType::Number),
+            Self::ObjectCreate(_) => Some(JBType::Object),
+            Self::ObjectSet(_) => Some(JBType::Object),
+            Self::ObjectUpdate(_) => Some(JBType::Object),
+            Self::ObjectGet(_) => Some(JBType::Object),
+            Self::DoodleCreate(_) => Some(JBType::Doodle),
+            Self::DoodleSet(_) => Some(JBType::Doodle),
+            Self::DoodleUpdate(_) => Some(JBType::Doodle),
+            Self::DoodleGet(_) => Some(JBType::Doodle),
+            Self::DoodleStroke(_) => Some(JBType::Doodle),
+            Self::ClientSend(_) => None,
+            Self::RoomExit(_) => None,
+            Self::Lock(_) => None,
+            Self::Drop(_) => None,
+            Self::Error => None,
+        }
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -68,7 +149,7 @@ struct JBKeyParam {
     key: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 struct JBClientSendParams {
     #[serde(rename = "from")]
     _from: i64,
@@ -121,14 +202,16 @@ pub async fn handle_socket(
             let profile = match url_query.role {
                 Role::Host => JBProfile {
                     id: serial,
-                    roles: json!({ "host": {} }),
+                    roles: JBProfileRoles::Host {},
                     user_id: url_query.user_id.clone(),
                     role: url_query.role,
                     name: url_query.name,
                 },
                 Role::Player => JBProfile {
                     id: serial,
-                    roles: json!({ "player": { "name": url_query.name.clone() } }),
+                    roles: JBProfileRoles::Player {
+                        name: url_query.name.clone(),
+                    },
                     user_id: url_query.user_id.clone(),
                     role: url_query.role,
                     name: url_query.name,
@@ -226,7 +309,7 @@ pub async fn handle_socket(
                 match ws_message {
                     Some(Ok(ws_message)) => {
                         let message: WSMessage = match ws_message {
-                            Message::Text(ref t) => serde_json::from_str(t).unwrap(),
+                            Message::Text(ref t) => serde_json::from_str(t).map_err(|e| (Arc::clone(&client), axum::Error::new(e)))?,
                             Message::Close(_) => break 'outer,
                             Message::Ping(d) => {
                                 client.pong(d).await
@@ -272,14 +355,21 @@ async fn process_message(
     room: &Room,
     doodle_config: &DoodleConfig,
 ) -> Result<(), axum::Error> {
-    let mut split = message.opcode.split('/');
-    let scope = split.next().unwrap();
-    let action = split.next();
-    match action {
-        Some("create" | "set" | "update")
-            if matches!(scope, "text" | "number" | "object" | "doodle") =>
-        {
-            let params: JBCreateParams = serde_json::from_value(message.params).unwrap();
+    let jb_type = message.params.scope();
+    match message.params {
+        JBParams::TextCreate(params)
+        | JBParams::TextSet(params)
+        | JBParams::TextUpdate(params)
+        | JBParams::NumberCreate(params)
+        | JBParams::NumberSet(params)
+        | JBParams::NumberUpdate(params)
+        | JBParams::ObjectCreate(params)
+        | JBParams::ObjectSet(params)
+        | JBParams::ObjectUpdate(params)
+        | JBParams::DoodleCreate(params)
+        | JBParams::DoodleSet(params)
+        | JBParams::DoodleUpdate(params) => {
+            let jb_type = jb_type.unwrap();
             let entity = {
                 let prev_value = room.entities.get(&params.key);
                 let has_been_created = prev_value.is_some();
@@ -310,9 +400,6 @@ async fn process_message(
 
                     return Ok(());
                 }
-                let jb_type: JBType = scope
-                    .parse()
-                    .map_err(|_| axum::Error::new(format!("Invalid JBType {}", scope)))?;
                 JBEntity(
                     jb_type,
                     JBObject {
@@ -368,7 +455,7 @@ async fn process_message(
                     .send_ecast(JBMessage {
                         pc: 0,
                         re: None,
-                        opcode: Cow::Borrowed(scope),
+                        opcode: Cow::Borrowed(jb_type.as_str()),
                         result: &value,
                     })
                     .await?;
@@ -383,9 +470,7 @@ async fn process_message(
                 })
                 .await?;
         }
-        Some("stroke") if scope == "doodle" => {
-            let params: JBKeyWithLine = serde_json::from_value(message.params).unwrap();
-
+        JBParams::DoodleStroke(params) => {
             if let Some(mut entity) = room.entities.get_mut(&params.key) {
                 if let Some(JBValue::Doodle(ref mut doodle)) = entity.value_mut().1.val {
                     let line_value = json!({
@@ -428,22 +513,22 @@ async fn process_message(
                 }
             }
         }
-        Some("get") if matches!(scope, "text" | "number" | "object" | "doodle") => {
-            let params: JBKeyParam = serde_json::from_value(message.params).unwrap();
+        JBParams::TextGet(params)
+        | JBParams::NumberGet(params)
+        | JBParams::ObjectGet(params)
+        | JBParams::DoodleGet(params) => {
             if let Some(entity) = room.entities.get(&params.key) {
                 client
                     .send_ecast(JBMessage {
                         pc: 0,
                         re: Some(message.seq),
-                        opcode: Cow::Borrowed(scope),
+                        opcode: Cow::Borrowed(jb_type.unwrap().as_str()),
                         result: &serde_json::to_value(&entity.1).unwrap(),
                     })
                     .await?;
             }
         }
-        Some("send") if scope == "client" => {
-            let params: JBClientSendParams =
-                serde_json::from_value(message.params.clone()).unwrap();
+        JBParams::ClientSend(params) => {
             // Only used for blobcast compatibility?
             assert_eq!(params.to, 1);
             if let Some(con) = room.connections.get(&params.to) {
@@ -468,7 +553,7 @@ async fn process_message(
                             pc: 0,
                             re: None,
                             opcode: Cow::Borrowed("client/send"),
-                            result: &message.params,
+                            result: &serde_json::to_value(&params).unwrap(),
                         })
                         .await?;
                     }
@@ -483,7 +568,7 @@ async fn process_message(
                 })
                 .await?;
         }
-        Some("exit") if scope == "room" => {
+        JBParams::RoomExit(_) => {
             client
                 .send_ecast(JBMessage {
                     pc: 0,
@@ -497,83 +582,69 @@ async fn process_message(
             }
             room.exit.notify_waiters();
         }
-        None => match scope {
-            "lock" => {
-                let params: JBKeyParam = serde_json::from_value(message.params).unwrap();
-                if let Some(entity) = room.entities.get(&params.key) {
-                    entity
-                        .value()
-                        .2
-                        .locked
-                        .store(true, std::sync::atomic::Ordering::Release);
-                    entity
-                        .value()
-                        .1
-                        .from
-                        .store(client.profile.id, std::sync::atomic::Ordering::Release);
-                    let value = json!({ "key": params.key.clone(), "from": client.profile.id });
-                    for client in room
-                        .connections
-                        .iter()
-                        .filter(|c| c.profile.id != client.profile.id)
-                        .filter(|c| {
-                            entity
-                                .2
-                                .perms(c.profile.role, c.profile.id)
-                                .is_some_and(|pv| pv.is_readable())
+        JBParams::Lock(params) => {
+            if let Some(entity) = room.entities.get(&params.key) {
+                entity
+                    .value()
+                    .2
+                    .locked
+                    .store(true, std::sync::atomic::Ordering::Release);
+                entity
+                    .value()
+                    .1
+                    .from
+                    .store(client.profile.id, std::sync::atomic::Ordering::Release);
+                let value = json!({ "key": params.key.clone(), "from": client.profile.id });
+                for client in room
+                    .connections
+                    .iter()
+                    .filter(|c| c.profile.id != client.profile.id)
+                    .filter(|c| {
+                        entity
+                            .2
+                            .perms(c.profile.role, c.profile.id)
+                            .is_some_and(|pv| pv.is_readable())
+                    })
+                {
+                    client
+                        .send_ecast(JBMessage {
+                            pc: 0,
+                            re: None,
+                            opcode: Cow::Borrowed("lock"),
+                            result: &value,
                         })
-                    {
-                        client
-                            .send_ecast(JBMessage {
-                                pc: 0,
-                                re: None,
-                                opcode: Cow::Borrowed("lock"),
-                                result: &value,
-                            })
-                            .await?;
-                    }
+                        .await?;
+                }
 
-                    if doodle_config.render {
-                        if let Some(JBValue::Doodle(ref d)) = entity.value().1.val {
-                            d.render()
-                                .save_png(doodle_config.path.join(format!("{}.png", entity.key())))
-                                .unwrap();
-                        }
+                if doodle_config.render {
+                    if let Some(JBValue::Doodle(ref d)) = entity.value().1.val {
+                        d.render()
+                            .save_png(doodle_config.path.join(format!("{}.png", entity.key())))
+                            .unwrap();
                     }
                 }
-                client
-                    .send_ecast(JBMessage {
-                        pc: 0,
-                        re: Some(message.seq),
-                        opcode: Cow::Borrowed("ok"),
-                        result: &json!({}),
-                    })
-                    .await?;
             }
-            "drop" => {
-                let params: JBKeyParam = serde_json::from_value(message.params).unwrap();
-                room.entities.remove(&params.key);
-                client
-                    .send_ecast(JBMessage {
-                        pc: 0,
-                        re: Some(message.seq),
-                        opcode: Cow::Borrowed("ok"),
-                        result: &json!({}),
-                    })
-                    .await?;
-            }
-            _ => {
-                client
-                    .send_ecast(JBMessage {
-                        pc: 0,
-                        re: Some(message.seq),
-                        opcode: Cow::Borrowed("ok"),
-                        result: &json!({}),
-                    })
-                    .await?;
-            }
-        },
-        _ => {
+            client
+                .send_ecast(JBMessage {
+                    pc: 0,
+                    re: Some(message.seq),
+                    opcode: Cow::Borrowed("ok"),
+                    result: &json!({}),
+                })
+                .await?;
+        }
+        JBParams::Drop(params) => {
+            room.entities.remove(&params.key);
+            client
+                .send_ecast(JBMessage {
+                    pc: 0,
+                    re: Some(message.seq),
+                    opcode: Cow::Borrowed("ok"),
+                    result: &json!({}),
+                })
+                .await?;
+        }
+        JBParams::Error => {
             client
                 .send_ecast(JBMessage {
                     pc: 0,

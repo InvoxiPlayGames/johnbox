@@ -17,7 +17,6 @@ use axum::extract::ws::{Message, WebSocket};
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tokio::{
     io::Interest,
     sync::{Mutex, Notify},
@@ -200,7 +199,7 @@ pub async fn handle_socket(
 
         let profile = JBProfile {
             id: serial,
-            roles: json!({ "host": {} }),
+            roles: crate::JBProfileRoles::Host {},
             user_id: create_room
                 .message
                 .as_ref()
