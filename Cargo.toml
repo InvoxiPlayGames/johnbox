@@ -18,7 +18,7 @@ serde_urlencoded = "0.7.1"
 helix-core = { git = "https://github.com/helix-editor/helix", rev = "2cadec0" }
 helix-stdx = { git = "https://github.com/helix-editor/helix", rev = "2cadec0" }
 helix-lsp = { git = "https://github.com/helix-editor/helix", rev = "2cadec0" }
-tokio = { version = "1.37.0", features = ["rt-multi-thread", "macros", "fs", "process"] }
+tokio = { version = "1.37.0", features = ["rt-multi-thread", "macros", "fs", "process", "signal"] }
 tokio-tungstenite = { version = "0.21.0", features = ["rustls-tls-native-roots"] }
 tokio-util = { version = "0.7.11", features = ["io"] }
 tower-http = { version = "0.5.2", features = ["trace"] }

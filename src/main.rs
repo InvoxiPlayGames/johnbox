@@ -31,7 +31,10 @@ use rand_xoshiro::Xoshiro128PlusPlus;
 use reqwest::header::USER_AGENT;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::{
+    signal,
+    sync::{Mutex, Notify, RwLock},
+};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tree_sitter::{Parser, QueryCursor};
@@ -374,13 +377,21 @@ async fn main() {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
+    let handle = axum_server::Handle::new();
+
     let addr = SocketAddr::from(([0, 0, 0, 0], ports.https));
-    tracing::debug!("listening on {}", addr);
+    tracing::debug!("Ecast listening on {}", addr);
     let blobcast_addr = SocketAddr::from(([0, 0, 0, 0], ports.blobcast));
+    tracing::debug!("Blobcast listening on {}", blobcast_addr);
     tokio::try_join!(
-        axum_server::bind_rustls(addr, tls_config.clone()).serve(app.clone().into_make_service()),
-        axum_server::bind_rustls(blobcast_addr, tls_config).serve(app.into_make_service()),
-        redirect_http_to_https(ports),
+        axum_server::bind_rustls(addr, tls_config.clone())
+            .handle(handle.clone())
+            .serve(app.clone().into_make_service()),
+        axum_server::bind_rustls(blobcast_addr, tls_config)
+            .handle(handle.clone())
+            .serve(app.into_make_service()),
+        redirect_http_to_https(ports, handle.clone()),
+        shutdown_signal(handle)
     )
     .unwrap();
 }
@@ -445,7 +456,10 @@ pub fn room_id() -> String {
     code
 }
 
-async fn redirect_http_to_https(ports: Ports) -> Result<(), std::io::Error> {
+async fn redirect_http_to_https(
+    ports: Ports,
+    handle: axum_server::Handle,
+) -> Result<(), std::io::Error> {
     if let Some(port) = ports.http {
         fn make_https(
             host: String,
@@ -481,10 +495,41 @@ async fn redirect_http_to_https(ports: Ports) -> Result<(), std::io::Error> {
         };
 
         let addr = SocketAddr::from(([0, 0, 0, 0], 80));
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        tracing::debug!("listening on {}", listener.local_addr().unwrap());
-        axum::serve(listener, redirect.into_make_service()).await
+        tracing::debug!("listening on {}", addr);
+        axum_server::bind(addr)
+            .handle(handle)
+            .serve(redirect.into_make_service())
+            .await
     } else {
         Ok(())
     }
+}
+
+async fn shutdown_signal(handle: axum_server::Handle) -> Result<(), std::io::Error> {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("Received termination signal shutting down");
+    handle.graceful_shutdown(Some(Duration::from_secs(10))); // 10 secs is how long docker will wait
+                                                             // to force shutdown
+    Ok(())
 }
