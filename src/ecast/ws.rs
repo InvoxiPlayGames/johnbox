@@ -3,6 +3,7 @@ use std::{
     io::{Read, Write},
     process::Stdio,
     sync::Arc,
+    time::Duration,
 };
 
 use axum::extract::{
@@ -247,6 +248,10 @@ pub async fn handle_socket(
                         break
                     }
                 }
+            }
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                client.ping(b"jackbox".to_vec()).await
+                    .map_err(|e| (Arc::clone(&client), e))?;
             }
             _ = room.exit.notified() => {
                 tracing::debug!(code, "Removing room");

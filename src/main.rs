@@ -242,6 +242,15 @@ impl Client {
         Ok(())
     }
 
+    pub async fn ping(&self, d: Vec<u8>) -> Result<(), axum::Error> {
+        if let Err(e) = self.send_ws_message(Message::Ping(d)).await {
+            self.disconnect().await;
+            return Err(e);
+        }
+
+        Ok(())
+    }
+
     pub async fn pong(&self, d: Vec<u8>) -> Result<(), axum::Error> {
         if let Err(e) = self.send_ws_message(Message::Pong(d)).await {
             self.disconnect().await;

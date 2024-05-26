@@ -4,6 +4,7 @@ use std::{
     process::Stdio,
     str::FromStr,
     sync::Arc,
+    time::Duration,
 };
 
 use crate::{
@@ -29,7 +30,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 #[derive(Debug)]
 struct WSMessage<'a> {
     _opcode: u8,
-    message: JBMessage<'a>,
+    message: Option<JBMessage<'a>>,
 }
 
 impl<'a> FromStr for WSMessage<'a> {
@@ -38,8 +39,11 @@ impl<'a> FromStr for WSMessage<'a> {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.split_once("::").ok_or(None)?;
         let opcode: u8 = s.0.parse().or(Err(None))?;
-        let message: JBMessage =
-            serde_json::from_str(&s.1.get(1..).ok_or(Some(opcode))?).or(Err(Some(opcode)))?;
+        let message: Option<JBMessage> = if opcode == 5 {
+            serde_json::from_str(&s.1.get(1..).ok_or(Some(opcode))?).or(Err(Some(opcode)))?
+        } else {
+            None
+        };
 
         Ok(Self {
             _opcode: opcode,
@@ -146,10 +150,17 @@ pub async fn handle_socket(
         room_serial: 1.into(),
         room_config: crate::JBRoom {
             app_tag: super::APP_TAGS
-                .get(&create_room.message.args.get_args().app_id)
+                .get(&create_room.message.as_ref().unwrap().args.get_args().app_id)
                 .map(|s| s.to_string())
                 .unwrap_or_default(),
-            app_id: create_room.message.args.get_args().app_id.clone(),
+            app_id: create_room
+                .message
+                .as_ref()
+                .unwrap()
+                .args
+                .get_args()
+                .app_id
+                .clone(),
             audience_enabled: false,
             code: room_code.clone(),
             audience_host: host.clone(),
@@ -195,6 +206,8 @@ pub async fn handle_socket(
             roles: json!({ "host": {} }),
             user_id: create_room
                 .message
+                .as_ref()
+                .unwrap()
                 .args
                 .get_args()
                 .user_id
@@ -230,8 +243,10 @@ pub async fn handle_socket(
                             _ => continue,
                         };
                         tracing::debug!(id = client.profile.id, role = ?client.profile.role, ?message, "Recieved WS Message");
-                        process_message(&client, message, &room).await
-                            .map_err(|e| (Arc::clone(&client), e))?;
+                        if let Some(ref message) = message.message {
+                            process_message(&client, message, &room).await
+                                .map_err(|e| (Arc::clone(&client), e))?;
+                        }
                         tracing::debug!("Message Processed");
                     }
                     Some(Err(e)) => {
@@ -241,6 +256,10 @@ pub async fn handle_socket(
                         break
                     }
                 }
+            }
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                client.send_ws_message(Message::Text(String::from("2:::"))).await
+                    .map_err(|e| (Arc::clone(&client), e))?;
             }
             _ = room.exit.notified() => {
                 tracing::debug!(room_code, "Removing room");
@@ -258,10 +277,10 @@ pub async fn handle_socket(
 
 async fn process_message(
     client: &Client,
-    message: WSMessage<'_>,
+    message: &JBMessage<'_>,
     room: &Room,
 ) -> Result<(), axum::Error> {
-    match message.message.args.get_args().action.as_ref() {
+    match message.args.get_args().action.as_ref() {
         "SetRoomBlob" => {
             let entity = {
                 let prev_value = room.entities.get("bc:room");
@@ -270,14 +289,7 @@ async fn process_message(
                     JBObject {
                         key: "bc:room".to_owned(),
                         val: Some(JBValue::Object(
-                            message
-                                .message
-                                .args
-                                .get_args()
-                                .blob
-                                .as_object()
-                                .cloned()
-                                .unwrap(),
+                            message.args.get_args().blob.as_object().cloned().unwrap(),
                         )),
                         restrictions: JBRestrictions::default(),
                         version: prev_value
@@ -335,7 +347,7 @@ async fn process_message(
                 .await?;
         }
         "SetCustomerBlob" => {
-            let user_id = message.message.args.get_args().customer_user_id.as_ref();
+            let user_id = message.args.get_args().customer_user_id.as_ref();
             let key = format!("bc:customer:{}", user_id);
             let connection = room
                 .connections
@@ -349,14 +361,7 @@ async fn process_message(
                     JBObject {
                         key: key.clone(),
                         val: Some(JBValue::Object(
-                            message
-                                .message
-                                .args
-                                .get_args()
-                                .blob
-                                .as_object()
-                                .cloned()
-                                .unwrap(),
+                            message.args.get_args().blob.as_object().cloned().unwrap(),
                         )),
                         restrictions: JBRestrictions::default(),
                         version: prev_value
