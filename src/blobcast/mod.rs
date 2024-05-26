@@ -32,6 +32,7 @@ pub const APP_TAGS: phf::Map<&'static str, &'static str> = phf::phf_map! {
     "ba051223-0c2e-4420-8f90-1356d94d6284" => "bracketeering",
     "c9ae7765-ee0a-a0f6-492c-90548b1d52fb" => "overdrawn",
     "70147cd2-65a0-43af-b7e4-2ebb9997544e" => "ydkj2018",
+    "5983d1cf-bf20-5def-7224-3b6b07fa0a06" => "rapbattle",
     "25bcaae6-cada-4149-9947-5ef63f2aa2a4" => "splittheroom",
     "6a899966-4120-430c-9ae2-95f90767fa48" => "patentlystupid",
     "c72415bb-762a-df24-10f1-62dd419342a2" => "slingshoot",
