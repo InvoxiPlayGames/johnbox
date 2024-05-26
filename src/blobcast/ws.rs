@@ -262,8 +262,6 @@ pub async fn handle_socket(
                     .map_err(|e| (Arc::clone(&client), e))?;
             }
             _ = room.exit.notified() => {
-                tracing::debug!(room_code, "Removing room");
-                room_map.remove(&room_code);
                 break
             }
         }
@@ -271,6 +269,9 @@ pub async fn handle_socket(
 
     client.disconnect().await;
     tracing::debug!(id = client.profile.id, role = ?client.profile.role, "Leaving room");
+    room.exit.notify_waiters();
+    tracing::debug!(room_code, "Removing room");
+    room_map.remove(&room_code);
 
     Ok(())
 }
