@@ -12,9 +12,8 @@ use axum::extract::{
 };
 use dashmap::DashMap;
 use futures_util::StreamExt;
-use serde::{ser::SerializeMap, Deserialize, Serialize};
+use serde::{de::IgnoredAny, ser::SerializeMap, Deserialize, Serialize};
 use serde_json::json;
-use serde_with::serde_as;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -68,15 +67,13 @@ pub enum JBResult<'a> {
 }
 
 #[derive(Deserialize, Debug)]
-#[serde_as]
 struct WSMessage {
     #[serde(flatten)]
-    #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
     params: JBParams,
     seq: u64,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Debug)]
 #[serde(tag = "opcode", content = "params")]
 enum JBParams {
     #[serde(rename = "text/create")]
@@ -116,13 +113,13 @@ enum JBParams {
     #[serde(rename = "client/send")]
     ClientSend(JBClientSendParams),
     #[serde(rename = "room/exit")]
-    RoomExit(#[serde(skip)] ()),
+    RoomExit(IgnoredAny),
     #[serde(rename = "lock")]
     Lock(JBKeyParam),
     #[serde(rename = "drop")]
     Drop(JBKeyParam),
-    #[default]
-    Error,
+    #[serde(untagged)]
+    Other(IgnoredAny),
 }
 
 impl JBParams {
@@ -149,7 +146,7 @@ impl JBParams {
             Self::RoomExit(_) => None,
             Self::Lock(_) => None,
             Self::Drop(_) => None,
-            Self::Error => None,
+            Self::Other(_) => None,
         }
     }
 }
@@ -673,7 +670,7 @@ async fn process_message(
                 })
                 .await?;
         }
-        JBParams::Error => {
+        JBParams::Other(_) => {
             client
                 .send_ecast(JBMessage {
                     pc: 0,
