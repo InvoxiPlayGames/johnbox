@@ -15,7 +15,9 @@ pub mod ws;
 
 pub const APP_TAGS: phf::Map<&'static str, &'static str> = phf::phf_map! {
     "130f9f92-6fc4-4cdb-815e-0f65fdd2904b" => "survivetheinternet",
-    "75a6de72-ea54-e1cb-28e1-aab354704d45" => "fibbage3"
+    "75a6de72-ea54-e1cb-28e1-aab354704d45" => "fibbage3",
+    "CCJhi8No2mKeADbC474Zn81Vstm7WyBP" => "bombintern",
+    "c72415bb-762a-df24-10f1-62dd419342a2" => "slingshoot"
 };
 
 #[derive(Deserialize, Serialize)]

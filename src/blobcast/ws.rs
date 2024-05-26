@@ -33,12 +33,13 @@ struct WSMessage<'a> {
 }
 
 impl<'a> FromStr for WSMessage<'a> {
-    type Err = ();
+    type Err = Option<u8>;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.split_once("::").ok_or(())?;
-        let opcode: u8 = s.0.parse().or(Err(()))?;
-        let message: JBMessage = serde_json::from_str(&s.1[1..]).or(Err(()))?;
+        let s = s.split_once("::").ok_or(None)?;
+        let opcode: u8 = s.0.parse().or(Err(None))?;
+        let message: JBMessage =
+            serde_json::from_str(&s.1.get(1..).ok_or(Some(opcode))?).or(Err(Some(opcode)))?;
 
         Ok(Self {
             _opcode: opcode,
@@ -335,22 +336,17 @@ async fn process_message(
                 .await?;
         }
         "SetCustomerBlob" => {
-            eprintln!("user_id");
             let entity;
             let key;
             {
                 let user_id = message.message.args.get_args().customer_user_id.as_ref();
-                eprintln!("key");
                 key = format!("bc:customer:{}", user_id);
-                eprintln!("prev_value");
                 let prev_value = room.entities.get(&key);
-                eprintln!("connection");
                 let connection = room
                     .connections
                     .iter()
                     .find(|c| c.profile.user_id == user_id)
                     .unwrap();
-                eprintln!("entity");
                 entity = JBEntity(
                     JBType::Object,
                     JBObject {
@@ -380,9 +376,7 @@ async fn process_message(
                         }],
                     },
                 );
-                eprintln!("value");
                 let value = serde_json::to_value(&entity.1).unwrap();
-                eprintln!("send ecast");
                 connection
                     .send_ecast(crate::ecast::ws::JBMessage {
                         pc: 0,
@@ -391,10 +385,8 @@ async fn process_message(
                         result: &value,
                     })
                     .await?;
-                eprintln!("insert");
             }
             room.entities.insert(key, entity);
-            eprintln!("done");
         }
         "LockRoom" => {
             client
