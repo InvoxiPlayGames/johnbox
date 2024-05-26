@@ -204,6 +204,7 @@ pub enum JBProfileRoles {
     Player { name: String },
 }
 
+#[derive(Debug)]
 pub struct Client {
     pub profile: JBProfile,
     socket: Mutex<Option<SplitSink<WebSocket, Message>>>,

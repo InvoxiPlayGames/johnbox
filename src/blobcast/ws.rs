@@ -9,6 +9,7 @@ use std::{
 
 use crate::{
     acl::{Acl, Role},
+    ecast::ws::JBResult,
     entity::{JBAttributes, JBEntity, JBObject, JBRestrictions, JBType, JBValue},
     Client, ClientType, JBProfile, Room,
 };
@@ -301,7 +302,7 @@ async fn process_message(
                     },
                 )
             };
-            let value = serde_json::to_value(&entity.1).unwrap();
+            let value = JBResult::Object(&entity.1);
             for client in room.connections.iter() {
                 match client.client_type {
                     ClientType::Ecast => {
@@ -309,7 +310,6 @@ async fn process_message(
                             .send_ecast(crate::ecast::ws::JBMessage {
                                 pc: 0,
                                 re: None,
-                                opcode: Cow::Borrowed("object"),
                                 result: &value,
                             })
                             .await?;
@@ -376,13 +376,11 @@ async fn process_message(
                     },
                 )
             };
-            let value = serde_json::to_value(&entity.1).unwrap();
             connection
                 .send_ecast(crate::ecast::ws::JBMessage {
                     pc: 0,
                     re: None,
-                    opcode: Cow::Borrowed("object"),
-                    result: &value,
+                    result: &JBResult::Object(&entity.1),
                 })
                 .await?;
             room.entities.insert(key, entity);

@@ -32,8 +32,39 @@ pub struct JBMessage<'a> {
     pub pc: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub re: Option<u64>,
-    pub opcode: Cow<'a, str>,
-    pub result: &'a serde_json::Value,
+    #[serde(flatten)]
+    pub result: &'a JBResult<'a>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(tag = "opcode", content = "result")]
+pub enum JBResult<'a> {
+    #[serde(rename = "client/welcome")]
+    ClientWelcome(ClientWelcome<'a>),
+    #[serde(rename = "client/connected")]
+    ClientConnected(ClientConnected<'a>),
+    #[serde(rename = "text")]
+    Text(&'a JBObject),
+    #[serde(rename = "number")]
+    Number(&'a JBObject),
+    #[serde(rename = "object")]
+    Object(&'a JBObject),
+    #[serde(rename = "doodle")]
+    Doodle(&'a JBObject),
+    #[serde(rename = "doodle/line")]
+    DoodleLine {
+        key: Cow<'a, str>,
+        from: i64,
+        val: &'a JBLine,
+    },
+    #[serde(rename = "client/send")]
+    ClientSend(JBClientSendParams),
+    #[serde(rename = "lock")]
+    Lock { key: Cow<'a, str>, from: i64 },
+    #[serde(rename = "error")]
+    Error(&'static str),
+    #[serde(rename = "ok")]
+    Ok {},
 }
 
 #[derive(Deserialize, Debug)]
@@ -150,16 +181,16 @@ struct JBKeyParam {
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-struct JBClientSendParams {
+pub struct JBClientSendParams {
     #[serde(rename = "from")]
     _from: i64,
     to: i64,
     body: serde_json::Value,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct ClientWelcome<'a> {
+pub struct ClientWelcome<'a> {
     id: i64,
     secret: Token,
     reconnect: bool,
@@ -169,9 +200,9 @@ struct ClientWelcome<'a> {
     profile: &'a JBProfile,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct ClientConnected<'a> {
+pub struct ClientConnected<'a> {
     id: i64,
     user_id: &'a str,
     name: &'a str,
@@ -234,8 +265,7 @@ pub async fn handle_socket(
         .send_ecast(JBMessage {
             pc: 0,
             re: None,
-            opcode: Cow::Borrowed("client/welcome"),
-            result: &serde_json::to_value(ClientWelcome {
+            result: &JBResult::ClientWelcome(ClientWelcome {
                 id: client.profile.id,
                 secret: url_query.secret.unwrap_or_else(|| Token::random()),
                 reconnect,
@@ -247,8 +277,7 @@ pub async fn handle_socket(
                 },
                 here: GetHere(&room.connections, client.profile.id),
                 profile: &client.profile,
-            })
-            .unwrap(),
+            }),
         })
         .await
         .map_err(|e| (Arc::clone(&client), e))?;
@@ -279,21 +308,19 @@ pub async fn handle_socket(
                         .map_err(|e| (Arc::clone(&client), e))?;
                 }
                 ClientType::Ecast => {
-                    let client_connected = serde_json::to_value(ClientConnected {
+                    let client_connected = JBResult::ClientConnected(ClientConnected {
                         id: client.profile.id,
                         user_id: &client.profile.user_id,
                         name: &client.profile.name,
                         role: client.profile.role,
                         reconnect,
                         profile: &client.profile,
-                    })
-                    .unwrap();
+                    });
 
                     host.value()
                         .send_ecast(JBMessage {
                             pc: 0,
                             re: None,
-                            opcode: Cow::Borrowed("client/connected"),
                             result: &client_connected,
                         })
                         .await
@@ -393,8 +420,7 @@ async fn process_message(
                         .send_ecast(JBMessage {
                             pc: 0,
                             re: None,
-                            opcode: Cow::Borrowed("error"),
-                            result: &json!("Permission denied"),
+                            result: &JBResult::Error("Permission denied"),
                         })
                         .await?;
 
@@ -439,7 +465,12 @@ async fn process_message(
                     },
                 )
             };
-            let value = serde_json::to_value(&entity.1).unwrap();
+            let value = match jb_type {
+                JBType::Text => JBResult::Text(&entity.1),
+                JBType::Number => JBResult::Number(&entity.1),
+                JBType::Object => JBResult::Object(&entity.1),
+                JBType::Doodle => JBResult::Doodle(&entity.1),
+            };
             for client in room
                 .connections
                 .iter()
@@ -455,7 +486,6 @@ async fn process_message(
                     .send_ecast(JBMessage {
                         pc: 0,
                         re: None,
-                        opcode: Cow::Borrowed(jb_type.as_str()),
                         result: &value,
                     })
                     .await?;
@@ -465,21 +495,18 @@ async fn process_message(
                 .send_ecast(JBMessage {
                     pc: 0,
                     re: Some(message.seq),
-                    opcode: Cow::Borrowed("ok"),
-                    result: &json!({}),
+                    result: &JBResult::Ok {},
                 })
                 .await?;
         }
         JBParams::DoodleStroke(params) => {
             if let Some(mut entity) = room.entities.get_mut(&params.key) {
-                if let Some(JBValue::Doodle(ref mut doodle)) = entity.value_mut().1.val {
-                    let line_value = json!({
-                         "key": params.key,
-                         "from": client.profile.id,
-                         "val": serde_json::to_value(&params.line).unwrap()
-                    });
-                    doodle.lines.push(params.line);
-                    doodle.lines.sort_unstable_by_key(|l| l.index);
+                {
+                    let line_value = JBResult::DoodleLine {
+                        key: Cow::Borrowed(&params.key),
+                        from: client.profile.id,
+                        val: &params.line,
+                    };
 
                     for client in room
                         .connections
@@ -496,21 +523,22 @@ async fn process_message(
                             .send_ecast(JBMessage {
                                 pc: 0,
                                 re: None,
-                                opcode: Cow::Borrowed("doodle/line"),
                                 result: &line_value,
                             })
                             .await?;
                     }
-
-                    client
-                        .send_ecast(JBMessage {
-                            pc: 0,
-                            re: Some(message.seq),
-                            opcode: Cow::Borrowed("ok"),
-                            result: &json!({}),
-                        })
-                        .await?;
                 }
+                if let Some(JBValue::Doodle(ref mut doodle)) = entity.value_mut().1.val {
+                    doodle.lines.push(params.line);
+                    doodle.lines.sort_unstable_by_key(|l| l.index);
+                }
+                client
+                    .send_ecast(JBMessage {
+                        pc: 0,
+                        re: Some(message.seq),
+                        result: &JBResult::Ok {},
+                    })
+                    .await?;
             }
         }
         JBParams::TextGet(params)
@@ -522,8 +550,12 @@ async fn process_message(
                     .send_ecast(JBMessage {
                         pc: 0,
                         re: Some(message.seq),
-                        opcode: Cow::Borrowed(jb_type.unwrap().as_str()),
-                        result: &serde_json::to_value(&entity.1).unwrap(),
+                        result: &match jb_type.unwrap() {
+                            JBType::Text => JBResult::Text(&entity.1),
+                            JBType::Number => JBResult::Number(&entity.1),
+                            JBType::Object => JBResult::Object(&entity.1),
+                            JBType::Doodle => JBResult::Doodle(&entity.1),
+                        },
                     })
                     .await?;
             }
@@ -552,8 +584,7 @@ async fn process_message(
                         con.send_ecast(JBMessage {
                             pc: 0,
                             re: None,
-                            opcode: Cow::Borrowed("client/send"),
-                            result: &serde_json::to_value(&params).unwrap(),
+                            result: &JBResult::ClientSend(params),
                         })
                         .await?;
                     }
@@ -563,8 +594,7 @@ async fn process_message(
                 .send_ecast(JBMessage {
                     pc: 0,
                     re: Some(message.seq),
-                    opcode: Cow::Borrowed("ok"),
-                    result: &json!({}),
+                    result: &JBResult::Ok {},
                 })
                 .await?;
         }
@@ -573,8 +603,7 @@ async fn process_message(
                 .send_ecast(JBMessage {
                     pc: 0,
                     re: Some(message.seq),
-                    opcode: Cow::Borrowed("ok"),
-                    result: &json!({}),
+                    result: &JBResult::Ok {},
                 })
                 .await?;
             for client in room.connections.iter() {
@@ -594,7 +623,10 @@ async fn process_message(
                     .1
                     .from
                     .store(client.profile.id, std::sync::atomic::Ordering::Release);
-                let value = json!({ "key": params.key.clone(), "from": client.profile.id });
+                let value = JBResult::Lock {
+                    key: Cow::Borrowed(&params.key),
+                    from: client.profile.id,
+                };
                 for client in room
                     .connections
                     .iter()
@@ -610,7 +642,6 @@ async fn process_message(
                         .send_ecast(JBMessage {
                             pc: 0,
                             re: None,
-                            opcode: Cow::Borrowed("lock"),
                             result: &value,
                         })
                         .await?;
@@ -628,8 +659,7 @@ async fn process_message(
                 .send_ecast(JBMessage {
                     pc: 0,
                     re: Some(message.seq),
-                    opcode: Cow::Borrowed("ok"),
-                    result: &json!({}),
+                    result: &JBResult::Ok {},
                 })
                 .await?;
         }
@@ -639,8 +669,7 @@ async fn process_message(
                 .send_ecast(JBMessage {
                     pc: 0,
                     re: Some(message.seq),
-                    opcode: Cow::Borrowed("ok"),
-                    result: &json!({}),
+                    result: &JBResult::Ok {},
                 })
                 .await?;
         }
@@ -649,8 +678,7 @@ async fn process_message(
                 .send_ecast(JBMessage {
                     pc: 0,
                     re: Some(message.seq),
-                    opcode: Cow::Borrowed("ok"),
-                    result: &json!({}),
+                    result: &JBResult::Ok {},
                 })
                 .await?;
         }
@@ -659,6 +687,7 @@ async fn process_message(
     Ok(())
 }
 
+#[derive(Debug)]
 struct GetEntities<'a> {
     entities: &'a DashMap<String, JBEntity>,
     role: Role,
@@ -686,6 +715,7 @@ impl<'a> Serialize for GetEntities<'a> {
     }
 }
 
+#[derive(Debug)]
 struct GetHere<'a>(&'a Connections, i64);
 
 impl<'a> Serialize for GetHere<'a> {
