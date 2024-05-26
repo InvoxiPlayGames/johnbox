@@ -13,11 +13,28 @@ use crate::{OpMode, State, Token};
 
 pub mod ws;
 
+// The only way to derive this it seems is by starting a game in each game in proxy
+// mode, and noting down this app id and tag that jackbox.tv gives you.
 pub const APP_TAGS: phf::Map<&'static str, &'static str> = phf::phf_map! {
-    "130f9f92-6fc4-4cdb-815e-0f65fdd2904b" => "survivetheinternet",
-    "75a6de72-ea54-e1cb-28e1-aab354704d45" => "fibbage3",
+    "6b0eba86a4a303019c1e0f87f6e3dc53" => "fibbage2",
+    "WqtOjtE5JDSlp2APnbER9nqM5DEHjin7" => "earwax",
+    "tYOBHxxuHbhpGSIptPVPaVnDXGmKHIST" => "auction",
+    "bc140c96-9c1d-4640-aaf2-a4f57c0786d1" => "quiplash",
     "CCJhi8No2mKeADbC474Zn81Vstm7WyBP" => "bombintern",
-    "c72415bb-762a-df24-10f1-62dd419342a2" => "slingshoot"
+    "c01f66be-745d-4173-8dac-c60395b2437a" => "quiplash2",
+    "87fd7112-e835-4794-88bc-dc6e3630d640" => "triviadeath",
+    "46a70386-d9a9-11e5-b5d2-0a1d41d68578" => "pollposition",
+    "322cd918bbf2ac6af0c05b6f3b8b3ce8" => "fakinit",
+    "c531ca944bf9762cd63a032d87cb96e7" => "awshirt",
+    "75a6de72-ea54-e1cb-28e1-aab354704d45" => "fibbage3",
+    "130f9f92-6fc4-4cdb-815e-0f65fdd2904b" => "survivetheinternet",
+    "2c7351f4-953c-4ca3-88f3-7ddf9a973bd1" => "monstermingle",
+    "ba051223-0c2e-4420-8f90-1356d94d6284" => "bracketeering",
+    "c9ae7765-ee0a-a0f6-492c-90548b1d52fb" => "overdrawn",
+    "70147cd2-65a0-43af-b7e4-2ebb9997544e" => "ydkj2018",
+    "25bcaae6-cada-4149-9947-5ef63f2aa2a4" => "splittheroom",
+    "6a899966-4120-430c-9ae2-95f90767fa48" => "patentlystupid",
+    "c72415bb-762a-df24-10f1-62dd419342a2" => "slingshoot",
 };
 
 #[derive(Deserialize, Serialize)]
