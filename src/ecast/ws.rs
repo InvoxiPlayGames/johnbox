@@ -276,75 +276,78 @@ async fn process_message(
             if matches!(scope, "text" | "number" | "object" | "doodle") =>
         {
             let params: JBCreateParams = serde_json::from_value(message.params).unwrap();
-            let prev_value = room.entities.get(&params.key);
-            let has_been_created = prev_value.is_some();
-            let is_unlocked = prev_value.as_ref().is_some_and(|pv| {
-                !pv.value()
-                    .2
-                    .locked
-                    .load(std::sync::atomic::Ordering::Acquire)
-            });
-            let has_perms = prev_value.as_ref().is_some_and(|p| {
-                p.value()
-                    .2
-                    .perms(client.profile.role, client.profile.id)
-                    .is_some_and(|i| i.is_writable())
-            });
-            if !(has_been_created || is_unlocked || has_perms) && client.profile.role != Role::Host
-            {
-                tracing::error!(id = client.profile.id, role = ?client.profile.role, acl = ?prev_value.as_ref().map(|pv| pv.value().2.acl.as_slice()), has_been_created, is_unlocked, has_perms, "Returned to sender");
-                client
-                    .send_ecast(JBMessage {
-                        pc: 0,
-                        re: None,
-                        opcode: Cow::Borrowed("error"),
-                        result: &json!("Permission denied"),
-                    })
-                    .await?;
+            let entity = {
+                let prev_value = room.entities.get(&params.key);
+                let has_been_created = prev_value.is_some();
+                let is_unlocked = prev_value.as_ref().is_some_and(|pv| {
+                    !pv.value()
+                        .2
+                        .locked
+                        .load(std::sync::atomic::Ordering::Acquire)
+                });
+                let has_perms = prev_value.as_ref().is_some_and(|p| {
+                    p.value()
+                        .2
+                        .perms(client.profile.role, client.profile.id)
+                        .is_some_and(|i| i.is_writable())
+                });
+                if !(has_been_created || is_unlocked || has_perms)
+                    && client.profile.role != Role::Host
+                {
+                    tracing::error!(id = client.profile.id, role = ?client.profile.role, acl = ?prev_value.as_ref().map(|pv| pv.value().2.acl.as_slice()), has_been_created, is_unlocked, has_perms, "Returned to sender");
+                    client
+                        .send_ecast(JBMessage {
+                            pc: 0,
+                            re: None,
+                            opcode: Cow::Borrowed("error"),
+                            result: &json!("Permission denied"),
+                        })
+                        .await?;
 
-                return Ok(());
-            }
-            let jb_type: JBType = scope
-                .parse()
-                .map_err(|_| axum::Error::new(format!("Invalid JBType {}", scope)))?;
-            let entity = JBEntity(
-                jb_type,
-                JBObject {
-                    key: params.key.clone(),
-                    val: match jb_type {
-                        JBType::Text => match params.val {
-                            serde_json::Value::String(s) => Some(JBValue::Text(s)),
-                            serde_json::Value::Null => None,
-                            _ => unreachable!(),
+                    return Ok(());
+                }
+                let jb_type: JBType = scope
+                    .parse()
+                    .map_err(|_| axum::Error::new(format!("Invalid JBType {}", scope)))?;
+                JBEntity(
+                    jb_type,
+                    JBObject {
+                        key: params.key.clone(),
+                        val: match jb_type {
+                            JBType::Text => match params.val {
+                                serde_json::Value::String(s) => Some(JBValue::Text(s)),
+                                serde_json::Value::Null => None,
+                                _ => unreachable!(),
+                            },
+                            JBType::Number => match params.val {
+                                serde_json::Value::Number(n) => {
+                                    Some(JBValue::Number(n.as_f64().unwrap()))
+                                }
+                                serde_json::Value::Null => None,
+                                _ => unreachable!(),
+                            },
+                            JBType::Object => match params.val {
+                                serde_json::Value::Object(o) => Some(JBValue::Object(o)),
+                                serde_json::Value::Null => None,
+                                _ => unreachable!(),
+                            },
+                            JBType::Doodle => Some(JBValue::Doodle(params.doodle)),
                         },
-                        JBType::Number => match params.val {
-                            serde_json::Value::Number(n) => {
-                                Some(JBValue::Number(n.as_f64().unwrap()))
-                            }
-                            serde_json::Value::Null => None,
-                            _ => unreachable!(),
-                        },
-                        JBType::Object => match params.val {
-                            serde_json::Value::Object(o) => Some(JBValue::Object(o)),
-                            serde_json::Value::Null => None,
-                            _ => unreachable!(),
-                        },
-                        JBType::Doodle => Some(JBValue::Doodle(params.doodle)),
+                        restrictions: params.restrictions,
+                        version: prev_value
+                            .as_ref()
+                            .map(|p| p.value().1.version + 1)
+                            .unwrap_or_default(),
+                        from: client.profile.id.into(),
                     },
-                    restrictions: params.restrictions,
-                    version: prev_value
-                        .as_ref()
-                        .map(|p| p.value().1.version + 1)
-                        .unwrap_or_default(),
-                    from: client.profile.id.into(),
-                },
-                JBAttributes {
-                    locked: false.into(),
-                    acl: prev_value
-                        .map(|pv| pv.value().2.acl.clone())
-                        .unwrap_or(params.acl),
-                },
-            );
+                    JBAttributes {
+                        locked: false.into(),
+                        acl: prev_value
+                            .map(|pv| pv.value().2.acl.clone())
+                            .unwrap_or(params.acl),
+                    },
+                )
+            };
             let value = serde_json::to_value(&entity.1).unwrap();
             for client in room
                 .connections

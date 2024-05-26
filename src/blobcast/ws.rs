@@ -263,10 +263,9 @@ async fn process_message(
 ) -> Result<(), axum::Error> {
     match message.message.args.get_args().action.as_ref() {
         "SetRoomBlob" => {
-            let entity;
-            {
+            let entity = {
                 let prev_value = room.entities.get("bc:room");
-                entity = JBEntity(
+                JBEntity(
                     JBType::Object,
                     JBObject {
                         key: "bc:room".to_owned(),
@@ -291,34 +290,34 @@ async fn process_message(
                         locked: false.into(),
                         acl: Acl::default_vec(),
                     },
-                );
-                let value = serde_json::to_value(&entity.1).unwrap();
-                for client in room.connections.iter() {
-                    match client.client_type {
-                        ClientType::Ecast => {
-                            client
-                                .send_ecast(crate::ecast::ws::JBMessage {
-                                    pc: 0,
-                                    re: None,
-                                    opcode: Cow::Borrowed("object"),
-                                    result: &value,
-                                })
-                                .await?;
-                        }
-                        ClientType::Blobcast => {
-                            client
-                                .send_blobcast(JBMessage {
-                                    name: Cow::Borrowed("msg"),
-                                    args: JBMessageArgs::Array([JBArgs {
-                                        arg_type: Cow::Borrowed("Event"),
-                                        action: Cow::Borrowed("RoomBlobChanged"),
-                                        room_id: Cow::Borrowed(&room.room_config.code),
-                                        blob: serde_json::to_value(&entity.1.val).unwrap(),
-                                        ..Default::default()
-                                    }]),
-                                })
-                                .await?;
-                        }
+                )
+            };
+            let value = serde_json::to_value(&entity.1).unwrap();
+            for client in room.connections.iter() {
+                match client.client_type {
+                    ClientType::Ecast => {
+                        client
+                            .send_ecast(crate::ecast::ws::JBMessage {
+                                pc: 0,
+                                re: None,
+                                opcode: Cow::Borrowed("object"),
+                                result: &value,
+                            })
+                            .await?;
+                    }
+                    ClientType::Blobcast => {
+                        client
+                            .send_blobcast(JBMessage {
+                                name: Cow::Borrowed("msg"),
+                                args: JBMessageArgs::Array([JBArgs {
+                                    arg_type: Cow::Borrowed("Event"),
+                                    action: Cow::Borrowed("RoomBlobChanged"),
+                                    room_id: Cow::Borrowed(&room.room_config.code),
+                                    blob: serde_json::to_value(&entity.1.val).unwrap(),
+                                    ..Default::default()
+                                }]),
+                            })
+                            .await?;
                     }
                 }
             }
@@ -336,18 +335,16 @@ async fn process_message(
                 .await?;
         }
         "SetCustomerBlob" => {
-            let entity;
-            let key;
-            {
-                let user_id = message.message.args.get_args().customer_user_id.as_ref();
-                key = format!("bc:customer:{}", user_id);
+            let user_id = message.message.args.get_args().customer_user_id.as_ref();
+            let key = format!("bc:customer:{}", user_id);
+            let connection = room
+                .connections
+                .iter()
+                .find(|c| c.profile.user_id == user_id)
+                .unwrap();
+            let entity = {
                 let prev_value = room.entities.get(&key);
-                let connection = room
-                    .connections
-                    .iter()
-                    .find(|c| c.profile.user_id == user_id)
-                    .unwrap();
-                entity = JBEntity(
+                JBEntity(
                     JBType::Object,
                     JBObject {
                         key: key.clone(),
@@ -375,17 +372,17 @@ async fn process_message(
                             principle: crate::ecast::acl::Principle::Id(*connection.key()),
                         }],
                     },
-                );
-                let value = serde_json::to_value(&entity.1).unwrap();
-                connection
-                    .send_ecast(crate::ecast::ws::JBMessage {
-                        pc: 0,
-                        re: None,
-                        opcode: Cow::Borrowed("object"),
-                        result: &value,
-                    })
-                    .await?;
-            }
+                )
+            };
+            let value = serde_json::to_value(&entity.1).unwrap();
+            connection
+                .send_ecast(crate::ecast::ws::JBMessage {
+                    pc: 0,
+                    re: None,
+                    opcode: Cow::Borrowed("object"),
+                    result: &value,
+                })
+                .await?;
             room.entities.insert(key, entity);
         }
         "LockRoom" => {
