@@ -54,13 +54,13 @@ pub async fn play_handler(
     axum::extract::State(state): axum::extract::State<State>,
     id: Path<String>,
 ) -> impl IntoResponse {
-    let host = format!(
-        "wss://{}:38203/socket.io/1/websocket/{}",
-        state.blobcast_host.read().await.deref(),
-        id.0
-    );
-
     if matches!(state.config.blobcast.op_mode, OpMode::Proxy) {
+        let host = format!(
+            "wss://{}:38203/socket.io/1/websocket/{}",
+            state.blobcast_host.read().await.deref(),
+            id.0
+        );
+
         ws.on_upgrade(move |socket| {
             let ecast_req = format!("{}/socket.io/websocket/{}", host, id.0);
             ws::handle_socket_proxy(host, socket, ecast_req)
